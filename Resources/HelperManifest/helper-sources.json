@@ -1,0 +1,35 @@
+{
+  "helpers" : {
+    "bgutil-pot" : {
+      "urls" : {
+        "arm64" : "https:\/\/github.com\/jim60105\/bgutil-ytdlp-pot-provider-rs\/releases\/download\/v0.8.1\/bgutil-pot-macos-aarch64",
+        "x86_64" : "https:\/\/github.com\/jim60105\/bgutil-ytdlp-pot-provider-rs\/releases\/download\/v0.8.1\/bgutil-pot-macos-x86_64"
+      },
+      "version" : "v0.8.1"
+    },
+    "bgutil-pot-plugin" : {
+      "urls" : {
+        "universal" : "https:\/\/github.com\/jim60105\/bgutil-ytdlp-pot-provider-rs\/releases\/download\/v0.8.1\/bgutil-ytdlp-pot-provider-rs.zip"
+      },
+      "version" : "v0.8.1"
+    },
+    "quickjs" : {
+      "urls" : {
+        "arm64" : "https:\/\/github.com\/quickjs-ng\/quickjs\/releases\/download\/v0.16.2\/qjs-darwin-arm64",
+        "x86_64" : "https:\/\/github.com\/quickjs-ng\/quickjs\/releases\/download\/v0.16.2\/qjs-darwin-x86_64"
+      },
+      "version" : "v0.16.2"
+    },
+    "yt-dlp" : {
+      "checksums" : {
+        "entryName" : "yt-dlp_macos.zip",
+        "listURL" : "https:\/\/github.com\/yt-dlp\/yt-dlp\/releases\/download\/2026.08.19\/SHA2-256SUMS",
+        "signatureURL" : "https:\/\/github.com\/yt-dlp\/yt-dlp\/releases\/download\/2026.08.19\/SHA2-256SUMS.sig"
+      },
+      "urls" : {
+        "universal" : "https:\/\/github.com\/yt-dlp\/yt-dlp\/releases\/download\/2026.08.19\/yt-dlp_macos.zip"
+      },
+      "version" : "2026.08.19"
+    }
+  }
+}

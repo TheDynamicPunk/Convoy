@@ -1,0 +1,4 @@
+/* Master switch off in the popup: hide the video latch. See video-latch.js. */
+html[data-mdl-off] [data-mdl-latch] {
+  display: none !important;
+}

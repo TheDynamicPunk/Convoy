@@ -1,0 +1,40 @@
+# Build artifacts
+.build/
+*.xcworkspace
+DerivedData/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+# Per-user Xcode state that SwiftPM generates on the first `swift test`
+# (schemes, window positions). Local to one person and one machine.
+.swiftpm/
+*.swp
+*.swo
+*.claude/
+
+# Logs
+*.log
+
+# Local config
+*.local
+*.private
+
+# Extensions build output
+Extensions/*/build/
+Extensions/*/dist/
+
+TODO.md
+docs/
+/graphify-out
+
+# Manifest signing key. It lives in ~/.config/convoy/ and must never be
+# committed -- whoever has it can publish a helper list every shipped copy of
+# the app will trust.
+*manifest-signing*.key
+*.private-key

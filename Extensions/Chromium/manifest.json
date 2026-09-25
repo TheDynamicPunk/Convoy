@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "Convoy",
+  "short_name": "Convoy",
+  "version": "1.0.1",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+SNBVOvwrTKmhIp0k0ifPwo2/O0iV6+jHLVS0viNTo+Vp3Sq7kLBNTpWFbBKa73104dmqCM1N18vRf25X4sgwERjaCTDkC39R/LBaeLdPRcLRXSv1vyBxcfRvfUOoGlvk16XsM3XtOp8vTzCu8ry4jGmN0DHX0GIk3+Zy1JeRHODXdXQMU6D4T5c5n01ThI5Dt/bQoBOlVMM0ROYTiuUrvvT+aJRLgCo+e1usFiCUwAcR40pld60iB2bxSPnytaKV8iGpbbYvpi/z8mAnosnejvOurKUN8ADzR7u5FQbfarNoyGsOt8VIk2HvUL5XnnhKrQo1yG9PInPAW5VhoS+wIDAQAB",
+  "description": "Multi-threaded download manager with browser integration",
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_popup": "Popup/popup.html",
+    "default_title": "Convoy",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "Background/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["ContentScripts/media-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["ContentScripts/content-script.js", "ContentScripts/video-latch.js"],
+      "css": ["ContentScripts/latch-off.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "permissions": [
+    "contextMenus",
+    "notifications",
+    "scripting",
+    "downloads",
+    "nativeMessaging",
+    "storage",
+    "webRequest"
+  ],
+  "optional_permissions": [
+    "cookies"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "commands": {
+    "download-with-convoy": {
+      "suggested_key": {
+        "default": "Alt+Shift+D",
+        "mac": "Alt+Shift+D"
+      },
+      "description": "Download all media on page with Convoy"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icon48.png", "ContentScripts/media-hook.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

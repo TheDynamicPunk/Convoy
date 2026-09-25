@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Convoy</string>
+    <key>CFBundleExecutable</key>
+    <string>Convoy</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.thedynamicpunk.convoy</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Convoy</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <!-- Both version keys are OVERWRITTEN at build time by build.sh, which
+         derives them from git: CFBundleShortVersionString from the nearest
+         tag, CFBundleVersion from the commit count. The values here are a
+         fallback for a build run outside a git checkout, and are what you
+         get for an untagged tree. Do not hand-edit them to "release" a
+         version -- tag the commit instead. -->
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+
+    <!-- No com.apple.security.* keys here on purpose. Entitlements come from
+         the code signature, never from Info.plist, so the six sandbox keys
+         that used to sit here were inert -- but they read as if this app
+         were sandboxed, which it deliberately is not (sandboxing breaks the
+         browser-launched native messaging host and the yt-dlp/ffmpeg/deno
+         subprocesses; see the signing section of build.sh). verify-bundle.sh
+         fails the build if any of them come back. -->
+
+    <!-- URL Scheme for deep linking / menu bar window opening -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>io.github.thedynamicpunk.convoy</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>convoy</string>
+            </array>
+        </dict>
+    </array>
+    
+    <!-- Sparkle. Both of these are compiled into every copy and permanent:
+         an installed copy trusts this one key and fetches this one URL, and
+         neither can be changed afterwards. Losing the matching private key
+         strands every user on the version they have.
+
+         Automatic checks are on so a first launch isn't interrupted by
+         Sparkle's permission prompt; Settings > General has the toggle. -->
+    <key>SUFeedURL</key>
+    <string>https://thedynamicpunk.github.io/convoy/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>D/PzFAFHx/awHjdjEhmrfMKAL/mhJs+/KUhTqRttA8A=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+
+    <!-- Native messaging host -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>
