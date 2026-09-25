@@ -3,6 +3,8 @@
 Convoy is a native macOS download manager written in Swift and SwiftUI, with a
 browser extension that hands downloads to the app. Free software under the GPL.
 
+<img width="1000" height="566" alt="Convoy taking a download from Chrome, pausing and resuming it, and grabbing a video from a web page, with both downloads running in parallel parts" src="https://github.com/user-attachments/assets/414ce46a-afd3-453f-8ff4-a903990e8fd5" />
+
 **[Download the latest release](https://github.com/TheDynamicPunk/Convoy/releases/latest)**,
 as an installer package or a disk image. Convoy isn't notarized by Apple, so
 macOS asks you to approve it once — see [Installing](#installing).
