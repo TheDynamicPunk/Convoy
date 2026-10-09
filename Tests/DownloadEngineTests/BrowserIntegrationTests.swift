@@ -152,4 +152,64 @@ final class BrowserIntegrationTests: XCTestCase {
             XCTAssertTrue(source.contains("const NATIVE_HOST = '\(BrowserIntegration.hostName)';"), file)
         }
     }
+
+    func testFirefoxExtensionIDMatchesTheFirefoxManifest() throws {
+        let url = extensionDirectory.deletingLastPathComponent().appendingPathComponent("Firefox/manifest.json")
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as? [String: Any])
+        let gecko = try XCTUnwrap((manifest["browser_specific_settings"] as? [String: Any])?["gecko"] as? [String: Any])
+
+        XCTAssertEqual(gecko["id"] as? String, BrowserIntegration.firefoxExtensionID)
+    }
+
+    // MARK: - Firefox family
+
+    private let firefox = BrowserIntegration.browsers.first { $0.id == "firefox" }!
+    private let zen = BrowserIntegration.browsers.first { $0.id == "zen" }!
+    private let librewolf = BrowserIntegration.browsers.first { $0.id == "librewolf" }!
+
+    func testFirefoxFileAllowsTheExtensionByIDNotByOrigin() throws {
+        let subject = integration(host: try makeHost("A"))
+
+        try subject.setUp(firefox)
+
+        XCTAssertEqual(subject.manifestURL(for: firefox).path,
+                       appSupport.path + "/Mozilla/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json")
+        let written = try manifest(subject, firefox)
+        XCTAssertEqual(written["allowed_extensions"] as? [String], [BrowserIntegration.firefoxExtensionID])
+        XCTAssertNil(written["allowed_origins"])
+        XCTAssertEqual(subject.status(of: firefox), .setUp)
+    }
+
+    func testZenSharesFirefoxsFileAndLibreWolfKeepsItsOwn() throws {
+        let subject = integration(host: try makeHost("A"))
+
+        try subject.setUp(firefox)
+
+        XCTAssertEqual(subject.manifestURL(for: zen), subject.manifestURL(for: firefox))
+        XCTAssertEqual(subject.status(of: zen), .setUp)
+        XCTAssertEqual(subject.status(of: librewolf), .notSetUp)
+        XCTAssertTrue(subject.manifestURL(for: librewolf).path.hasSuffix("/LibreWolf/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json"))
+    }
+
+    func testABrowserIsFoundUnderAnAlternateBundleIdentifier() throws {
+        let subject = integration(host: try makeHost("A"), installed: ["io.gitlab.librewolf-community"])
+
+        XCTAssertEqual(subject.relevantBrowsers().map(\.id), ["librewolf"])
+    }
+
+    func testFirefoxExtensionFolderIsSyncedBesideChromes() throws {
+        let bundled = root.appendingPathComponent("Bundle/FirefoxExtension")
+        try FileManager.default.createDirectory(at: bundled, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: bundled.appendingPathComponent("manifest.json"))
+        let subject = BrowserIntegration(applicationSupport: appSupport, hostExecutable: nil, bundledExtension: nil,
+                                         bundledFirefoxExtension: bundled, bundledFirefoxPackage: nil,
+                                         isLocationStable: true, applicationURL: { _ in nil })
+
+        XCTAssertTrue(try subject.syncExtension())
+        XCTAssertFalse(try subject.syncExtension())
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: subject.firefoxExtensionFolder.appendingPathComponent("manifest.json").path))
+        XCTAssertNotEqual(subject.firefoxExtensionFolder, subject.extensionFolder)
+        XCTAssertNil(subject.firefoxPackage)
+    }
 }

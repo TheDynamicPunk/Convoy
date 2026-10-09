@@ -1,4 +1,6 @@
 const NATIVE_HOST = 'io.github.thedynamicpunk.convoy.native';
+// The Firefox build declares a gecko section in its manifest; Chrome's has none.
+const IS_FIREFOX = Boolean(chrome.runtime.getManifest().browser_specific_settings?.gecko);
 
 const captureToggle = document.getElementById('captureToggle');
 const captureText = document.getElementById('captureText');
@@ -13,7 +15,8 @@ const cookieToggle = document.getElementById('cookieToggle');
 
 function showCapture(enabled) {
   captureToggle.checked = enabled;
-  captureText.textContent = enabled ? 'Capturing downloads' : 'Off — Chrome handles downloads';
+  captureText.textContent = enabled ? 'Capturing downloads'
+    : IS_FIREFOX ? 'Off — the browser handles downloads' : 'Off — Chrome handles downloads';
 }
 
 chrome.storage.local.get('captureEnabled', ({ captureEnabled }) => {
@@ -80,7 +83,13 @@ cookieToggle.addEventListener('change', async () => {
 // Chrome's own details page for this extension: site access, incognito,
 // pinning, and the shortcut link. There is no separate options page.
 
-document.getElementById('settingsBtn').addEventListener('click', () => {
-  chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
-  window.close();
-});
+// Firefox won't let an extension open about:addons, so its build has no such
+// button; the toolbar icon's context menu has Manage Extension.
+if (IS_FIREFOX) {
+  document.getElementById('settingsBtn').style.display = 'none';
+} else {
+  document.getElementById('settingsBtn').addEventListener('click', () => {
+    chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+    window.close();
+  });
+}

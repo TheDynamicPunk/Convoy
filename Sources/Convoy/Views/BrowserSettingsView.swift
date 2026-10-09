@@ -15,7 +15,7 @@ struct BrowserIntegrationView: View {
 
             Section {
                 if model.rows.isEmpty {
-                    Text("No supported browser found. Convoy works with Chrome, Brave, Edge, Vivaldi, Opera, Arc and Chromium.")
+                    Text("No supported browser found. Convoy works with Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium, Firefox, Zen, Floorp, LibreWolf and Waterfox.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -106,7 +106,7 @@ private struct BrowserName: View {
             } else {
                 Image(systemName: "globe").frame(width: 20, height: 20).foregroundStyle(.secondary)
             }
-            Text(row.browser.name)
+            Text(row.displayName)
         }
     }
 }
@@ -133,7 +133,16 @@ private struct ExtensionInstallSteps: View {
     @ObservedObject var model: BrowserSetupModel
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if model.showsChromiumSteps { chromiumSteps }
+            if model.showsFirefoxSteps { firefoxSteps }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var chromiumSteps: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if model.showsFirefoxSteps { Text("Chrome and other Chromium browsers").font(.headline) }
             InstallStep(number: 1, text: "In the browser, open the extensions page (chrome://extensions) and turn on Developer mode.")
             // Chromium loads a folder dropped on the extensions page as
             // unpacked, but only with Developer mode on -- hence step 1.
@@ -141,7 +150,26 @@ private struct ExtensionInstallSteps: View {
             Button("Show Extension Folder") { model.revealExtensionFolder() }
                 .padding(.leading, 26)
         }
-        .padding(.vertical, 4)
+    }
+
+    private var firefoxSteps: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Firefox and other Firefox-based browsers").font(.headline)
+            if model.hasSignedFirefoxPackage {
+                InstallStep(number: 1, text: "Click Add to open the extension in your browser, then confirm the prompt it shows.")
+                HStack {
+                    ForEach(model.firefoxTargets) { target in
+                        Button("Add to \(target.name)") { model.installFirefoxExtension(in: target) }
+                    }
+                }
+                .padding(.leading, 26)
+            } else {
+                InstallStep(number: 1, text: "This build isn't signed for Firefox, so the extension can only be loaded temporarily. Open about:debugging#/runtime/this-firefox.")
+                InstallStep(number: 2, text: "Click Load Temporary Add-on and choose manifest.json from the Firefox extension folder. It is removed when the browser quits.")
+                Button("Show Firefox Extension Folder") { model.revealFirefoxExtensionFolder() }
+                    .padding(.leading, 26)
+            }
+        }
     }
 }
 

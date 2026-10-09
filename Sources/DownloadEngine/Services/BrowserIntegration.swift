@@ -16,14 +16,22 @@ public struct BrowserIntegration: Sendable {
     public static let hostName = "io.github.thedynamicpunk.convoy.native"
     /// Fixed by the public `key` in the extension's manifest.json.
     public static let extensionID = "jfnchkplpoknchbbbnpgobnoolhdahmj"
+    /// Must match `browser_specific_settings.gecko.id` in Extensions/Firefox/manifest.json.
+    /// Permanent once the first build is signed.
+    public static let firefoxExtensionID = "convoy@thedynamicpunk.github.io"
 
     public struct Browser: Identifiable, Hashable, Sendable {
+        public enum Family: Hashable, Sendable { case chromium, gecko }
+
         public let id: String
         public let name: String
         public let bundleIdentifier: String
         /// The browser's user-data folder, relative to Application Support.
-        /// Chromium reads `NativeMessagingHosts/` inside it.
+        /// Both families read `NativeMessagingHosts/` inside it.
         let dataFolder: String
+        public var family: Family = .chromium
+        /// Other identifiers the same browser has been seen under.
+        var alternateBundleIdentifiers: [String] = []
     }
 
     public static let browsers: [Browser] = [
@@ -43,6 +51,24 @@ public struct BrowserIntegration: Sendable {
                 dataFolder: "com.operasoftware.Opera"),
         Browser(id: "arc", name: "Arc", bundleIdentifier: "company.thebrowser.Browser",
                 dataFolder: "Arc/User Data"),
+        // Firefox, Zen and Floorp read the one shared Mozilla folder; LibreWolf
+        // and Waterfox patch in their own. Zen's own folder is ignored.
+        Browser(id: "firefox", name: "Firefox", bundleIdentifier: "org.mozilla.firefox",
+                dataFolder: "Mozilla", family: .gecko),
+        Browser(id: "firefox-developer", name: "Firefox Developer Edition",
+                bundleIdentifier: "org.mozilla.firefoxdeveloperedition",
+                dataFolder: "Mozilla", family: .gecko),
+        Browser(id: "firefox-nightly", name: "Firefox Nightly", bundleIdentifier: "org.mozilla.nightly",
+                dataFolder: "Mozilla", family: .gecko),
+        Browser(id: "zen", name: "Zen", bundleIdentifier: "app.zen-browser.zen",
+                dataFolder: "Mozilla", family: .gecko),
+        Browser(id: "floorp", name: "Floorp", bundleIdentifier: "org.mozilla.floorp",
+                dataFolder: "Mozilla", family: .gecko, alternateBundleIdentifiers: ["one.ablaze.floorp"]),
+        Browser(id: "librewolf", name: "LibreWolf", bundleIdentifier: "org.mozilla.librewolf",
+                dataFolder: "LibreWolf", family: .gecko,
+                alternateBundleIdentifiers: ["io.gitlab.librewolf-community"]),
+        Browser(id: "waterfox", name: "Waterfox", bundleIdentifier: "net.waterfox.waterfox",
+                dataFolder: "Waterfox", family: .gecko),
     ]
 
     public enum Status: Equatable, Sendable {
@@ -67,6 +93,8 @@ public struct BrowserIntegration: Sendable {
     private let applicationSupport: URL
     private let hostExecutable: URL?
     private let bundledExtension: URL?
+    private let bundledFirefoxExtension: URL?
+    private let bundledFirefoxPackage: URL?
     private let applicationURL: @Sendable (String) -> URL?
     /// False when the app runs from a read-only volume: a mounted disk image,
     /// or the randomized copy macOS makes of a quarantined app (App
@@ -79,6 +107,8 @@ public struct BrowserIntegration: Sendable {
         applicationSupport: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
         hostExecutable: URL? = Bundle.main.url(forAuxiliaryExecutable: "NativeMessagingHost"),
         bundledExtension: URL? = Bundle.main.resourceURL?.appendingPathComponent("Extension", isDirectory: true),
+        bundledFirefoxExtension: URL? = Bundle.main.resourceURL?.appendingPathComponent("FirefoxExtension", isDirectory: true),
+        bundledFirefoxPackage: URL? = Bundle.main.url(forResource: "Convoy", withExtension: "xpi"),
         isLocationStable: Bool = BrowserIntegration.isWritableLocation(Bundle.main.bundleURL),
         applicationURL: @escaping @Sendable (String) -> URL? = {
             NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
@@ -87,6 +117,8 @@ public struct BrowserIntegration: Sendable {
         self.applicationSupport = applicationSupport
         self.hostExecutable = hostExecutable
         self.bundledExtension = bundledExtension
+        self.bundledFirefoxExtension = bundledFirefoxExtension
+        self.bundledFirefoxPackage = bundledFirefoxPackage
         self.isLocationStable = isLocationStable
         self.applicationURL = applicationURL
     }
@@ -105,20 +137,21 @@ public struct BrowserIntegration: Sendable {
     }
 
     public func applicationURL(for browser: Browser) -> URL? {
-        applicationURL(browser.bundleIdentifier)
+        ([browser.bundleIdentifier] + browser.alternateBundleIdentifiers)
+            .lazy.compactMap { applicationURL($0) }.first
     }
 
     /// Installed browsers, plus any that still hold our file.
     public func relevantBrowsers() -> [Browser] {
         Self.browsers.filter { browser in
-            applicationURL(browser.bundleIdentifier) != nil
+            applicationURL(for: browser) != nil
                 || FileManager.default.fileExists(atPath: manifestURL(for: browser).path)
         }
     }
 
     public func status(of browser: Browser) -> Status {
         guard let data = try? Data(contentsOf: manifestURL(for: browser)) else { return .notSetUp }
-        guard let desired = desiredManifest(),
+        guard let desired = desiredManifest(for: browser),
               let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               NSDictionary(dictionary: existing).isEqual(to: desired),
               let hostExecutable,
@@ -128,7 +161,7 @@ public struct BrowserIntegration: Sendable {
 
     public func setUp(_ browser: Browser) throws {
         guard isLocationStable else { throw SetupError.unstableLocation }
-        guard let desired = desiredManifest() else { throw SetupError.noHostExecutable }
+        guard let desired = desiredManifest(for: browser) else { throw SetupError.noHostExecutable }
         let url = manifestURL(for: browser)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONSerialization.data(
@@ -165,15 +198,19 @@ public struct BrowserIntegration: Sendable {
         }
     }
 
-    private func desiredManifest() -> [String: Any]? {
+    private func desiredManifest(for browser: Browser) -> [String: Any]? {
         guard let hostExecutable else { return nil }
-        return [
+        var manifest: [String: Any] = [
             "name": Self.hostName,
             "description": "Convoy Native Messaging Host",
             "path": hostExecutable.resolvingSymlinksInPath().path,
             "type": "stdio",
-            "allowed_origins": ["chrome-extension://\(Self.extensionID)/"],
         ]
+        switch browser.family {
+        case .chromium: manifest["allowed_origins"] = ["chrome-extension://\(Self.extensionID)/"]
+        case .gecko: manifest["allowed_extensions"] = [Self.firefoxExtensionID]
+        }
+        return manifest
     }
 
     // MARK: - Extension folder
@@ -185,25 +222,42 @@ public struct BrowserIntegration: Sendable {
         applicationSupport.appendingPathComponent("Convoy/Extension", isDirectory: true)
     }
 
-    /// Copies the bundled extension to `extensionFolder` when they differ.
+    /// Copies the bundled extensions to their folders when they differ.
     /// Browsers pick up the new files the next time they start.
     @discardableResult
     public func syncExtension() throws -> Bool {
-        guard let bundledExtension,
-              FileManager.default.fileExists(atPath: bundledExtension.path) else { return false }
-        if Self.contents(of: bundledExtension) == Self.contents(of: extensionFolder) { return false }
+        let chromium = try Self.sync(bundledExtension, to: extensionFolder)
+        let firefox = try Self.sync(bundledFirefoxExtension, to: firefoxExtensionFolder)
+        if chromium || firefox { Self.logger.notice("Updated the extension folder") }
+        return chromium || firefox
+    }
 
-        let parent = extensionFolder.deletingLastPathComponent()
+    /// Where an unsigned Firefox build is loaded from (about:debugging).
+    public var firefoxExtensionFolder: URL {
+        applicationSupport.appendingPathComponent("Convoy/Firefox Extension", isDirectory: true)
+    }
+
+    /// The signed package, present only in builds that were signed with AMO.
+    public var firefoxPackage: URL? {
+        guard let bundledFirefoxPackage,
+              FileManager.default.fileExists(atPath: bundledFirefoxPackage.path) else { return nil }
+        return bundledFirefoxPackage
+    }
+
+    private static func sync(_ source: URL?, to destination: URL) throws -> Bool {
+        guard let source, FileManager.default.fileExists(atPath: source.path) else { return false }
+        if contents(of: source) == contents(of: destination) { return false }
+
+        let parent = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        let staging = parent.appendingPathComponent("Extension.incoming", isDirectory: true)
+        let staging = parent.appendingPathComponent("\(destination.lastPathComponent).incoming", isDirectory: true)
         try? FileManager.default.removeItem(at: staging)
-        try FileManager.default.copyItem(at: bundledExtension, to: staging)
-        if FileManager.default.fileExists(atPath: extensionFolder.path) {
-            _ = try FileManager.default.replaceItemAt(extensionFolder, withItemAt: staging)
+        try FileManager.default.copyItem(at: source, to: staging)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
         } else {
-            try FileManager.default.moveItem(at: staging, to: extensionFolder)
+            try FileManager.default.moveItem(at: staging, to: destination)
         }
-        Self.logger.notice("Updated the extension folder")
         return true
     }
 

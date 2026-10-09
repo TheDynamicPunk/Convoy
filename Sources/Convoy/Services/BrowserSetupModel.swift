@@ -8,9 +8,17 @@ final class BrowserSetupModel: ObservableObject {
 
     struct Row: Identifiable {
         let browser: BrowserIntegration.Browser
+        /// Browsers sharing one registration file appear as one row.
+        let displayName: String
         let status: BrowserIntegration.Status
         let icon: NSImage?
         var id: String { browser.id }
+    }
+
+    struct FirefoxTarget: Identifiable {
+        let id: String
+        let name: String
+        let appURL: URL
     }
 
     @Published private(set) var rows: [Row] = []
@@ -25,6 +33,19 @@ final class BrowserSetupModel: ObservableObject {
 
     var isLocationStable: Bool { integration.isLocationStable }
     var extensionFolder: URL { integration.extensionFolder }
+    var firefoxExtensionFolder: URL { integration.firefoxExtensionFolder }
+    var hasSignedFirefoxPackage: Bool { integration.firefoxPackage != nil }
+
+    var showsFirefoxSteps: Bool { rows.contains { $0.browser.family == .gecko } }
+    var showsChromiumSteps: Bool { rows.isEmpty || rows.contains { $0.browser.family == .chromium } }
+
+    /// Installed Firefox-family browsers, for the Add to Firefox buttons.
+    var firefoxTargets: [FirefoxTarget] {
+        integration.relevantBrowsers().compactMap { browser in
+            guard browser.family == .gecko, let url = integration.applicationURL(for: browser) else { return nil }
+            return FirefoxTarget(id: browser.id, name: browser.name, appURL: url)
+        }
+    }
 
     /// Syncs the extension folder and repoints existing files off the main
     /// thread, then offers first-run setup once there's a browser to set up.
@@ -48,10 +69,23 @@ final class BrowserSetupModel: ObservableObject {
     }
 
     func refresh() {
-        rows = integration.relevantBrowsers().map { browser in
-            Row(browser: browser,
-                status: integration.status(of: browser),
-                icon: integration.applicationURL(for: browser).map { NSWorkspace.shared.icon(forFile: $0.path) })
+        var groups: [(path: String, browsers: [BrowserIntegration.Browser])] = []
+        for browser in integration.relevantBrowsers() {
+            let path = integration.manifestURL(for: browser).path
+            if let index = groups.firstIndex(where: { $0.path == path }) {
+                groups[index].browsers.append(browser)
+            } else {
+                groups.append((path, [browser]))
+            }
+        }
+        rows = groups.map { group in
+            let installed = group.browsers.filter { integration.applicationURL(for: $0) != nil }
+            let representative = installed.first ?? group.browsers[0]
+            let names = (installed.isEmpty ? [representative] : installed).map(\.name)
+            return Row(browser: representative,
+                       displayName: names.joined(separator: ", "),
+                       status: integration.status(of: representative),
+                       icon: integration.applicationURL(for: representative).map { NSWorkspace.shared.icon(forFile: $0.path) })
         }
     }
 
@@ -77,6 +111,17 @@ final class BrowserSetupModel: ObservableObject {
 
     func revealExtensionFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([extensionFolder])
+    }
+
+    func revealFirefoxExtensionFolder() {
+        NSWorkspace.shared.activateFileViewerSelecting([firefoxExtensionFolder])
+    }
+
+    /// Opens the signed package in the browser; Firefox shows its install prompt.
+    func installFirefoxExtension(in target: FirefoxTarget) {
+        guard let package = integration.firefoxPackage else { return }
+        NSWorkspace.shared.open([package], withApplicationAt: target.appURL,
+                                configuration: NSWorkspace.OpenConfiguration())
     }
 
     @discardableResult

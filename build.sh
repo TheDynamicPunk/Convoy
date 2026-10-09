@@ -149,6 +149,26 @@ cp "${PROJECT_DIR}/Resources/Info.plist" "${CONTENTS_DIR}/"
 # messaging file itself -- see BrowserIntegration.
 rsync -a --delete --exclude '.*' "${PROJECT_DIR}/Extensions/Chromium/" "${RESOURCES_DIR}/Extension/"
 
+# The Firefox build of the same extension: the shared tree plus its own
+# manifest and adapter. Release Firefox only keeps an extension that AMO has
+# signed, so a signed package (Extensions/build-firefox.sh --sign) is bundled
+# too when one exists for this exact extension version. Without it, Settings
+# falls back to loading the folder temporarily.
+bash "${PROJECT_DIR}/Extensions/build-firefox.sh" "${RESOURCES_DIR}/FirefoxExtension"
+FIREFOX_VERSION="$(plutil -extract version raw -o - "${RESOURCES_DIR}/FirefoxExtension/manifest.json")"
+FIREFOX_XPI="$(ls -t "${PROJECT_DIR}"/Extensions/Firefox/dist/*.xpi 2>/dev/null | head -1 || true)"
+if [ -n "$FIREFOX_XPI" ]; then
+    XPI_VERSION="$(unzip -p "$FIREFOX_XPI" manifest.json | plutil -extract version raw -o - - 2>/dev/null || true)"
+    if [ "$XPI_VERSION" = "$FIREFOX_VERSION" ]; then
+        cp "$FIREFOX_XPI" "${RESOURCES_DIR}/Convoy.xpi"
+        echo "  Firefox: bundled signed package ${FIREFOX_VERSION}"
+    else
+        echo "  Firefox: signed package is ${XPI_VERSION:-unreadable}, extension is ${FIREFOX_VERSION} -- not bundled"
+    fi
+else
+    echo "  Firefox: no signed package, bundling the unsigned folder only"
+fi
+
 # The helper list. Not signed: it lives inside the bundle, which macOS seals,
 # so the app's own signature is what protects it. Required, not optional -- a
 # build without it can install no helpers at all, and would fail at run time
