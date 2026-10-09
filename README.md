@@ -16,7 +16,8 @@ macOS asks you to approve it once — see [Installing](#installing).
   that don't support ranges.
 - **Pause and resume**, including across quitting and reopening the app.
 - **Browser integration** for Chromium browsers (Chrome, Brave, Edge, Vivaldi,
-  Opera, Arc, Chromium): intercepts downloads, adds right-click items for
+  Opera, Arc, Chromium) and Firefox-based ones (Firefox, Zen, Floorp,
+  LibreWolf, Waterfox): intercepts downloads, adds right-click items for
   links, images and media, and shows a download button over videos it finds on
   a page. Sends the page's cookies and headers so downloads behind a login
   work; incognito windows keep their own cookies.
@@ -34,9 +35,8 @@ macOS asks you to approve it once — see [Installing](#installing).
   clears it when you ask (Settings → Advanced).
 - **Light, dark or system appearance.**
 
-Not supported: Safari (Apple's extension route needs a paid certificate) and
-Firefox (needs its own build of the extension). The Mac App Store doesn't
-allow apps in this category.
+Not supported: Safari (Apple's extension route needs a paid certificate). The
+Mac App Store doesn't allow apps in this category.
 
 ## Requirements
 
@@ -95,6 +95,14 @@ Loading it, once per browser:
 The app keeps that copy of the extension up to date, and browsers pick up
 changes when they restart.
 
+Firefox and the browsers built on it need a different extension build, which
+Settings → Browser offers once one of them is installed. Firefox only keeps an
+extension that Mozilla has signed, so a release build adds it with one click
+(**Add to Firefox**) and Firefox asks you to confirm. A build without the
+signed package can only load the extension temporarily, from
+`about:debugging`, until the browser quits. In private windows, allow the
+extension under Manage Extension → Run in Private Windows.
+
 ## Building from source
 
 Building needs Xcode installed *and selected* as the active developer
@@ -126,7 +134,7 @@ later.
 
 ## How browser integration works
 
-1. The extension (a Chromium extension) captures a download, a right-click, or
+1. The extension (a Chromium or Firefox extension) captures a download, a right-click, or
    a video found on the page, and collects the URL, referrer, cookies and
    headers.
 2. It sends that to `NativeMessagingHost`, a small binary inside the app
@@ -150,7 +158,8 @@ Convoy/
 │   ├── NativeMessagingHost/    # Browser ↔ app bridge
 │   └── HelperManifestTool/     # Maintainer tool: builds the helper list
 ├── Extensions/
-│   └── Chromium/               # The browser extension
+│   ├── Chromium/               # The browser extension (shared code)
+│   └── Firefox/                # Firefox manifest and adapter over the shared code
 └── Resources/                  # Info.plist, icons, helper list
 ```
 
