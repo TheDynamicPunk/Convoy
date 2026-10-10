@@ -36,7 +36,17 @@ struct BrowserIntegrationView: View {
             } header: {
                 Text("Extension")
             } footer: {
-                Text("The folder is updated along with the app. Browsers load the new version when they restart.")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("The extension folder is updated along with the app.")
+                    if model.showsChromiumSteps {
+                        Text("Chromium browsers load the new version when they restart.")
+                    }
+                    if model.showsFirefoxSteps {
+                        Text(model.hasSignedFirefoxPackage
+                             ? "Firefox updates the extension on its own."
+                             : "Firefox forgets a temporarily loaded extension when it quits. Load it again from the folder.")
+                    }
+                }
             }
 
             Section {
@@ -47,7 +57,7 @@ struct BrowserIntegrationView: View {
             } header: {
                 Text("Uninstall")
             } footer: {
-                Text("Deletes the files Convoy added to your browsers. Do this before deleting the app. Remove the extension itself from each browser's extensions page.")
+                Text("Deletes the files Convoy added to your browsers. Do this before deleting the app. Remove the extension itself from each browser's extensions or add-ons page.")
             }
         }
         .formStyle(.grouped)
@@ -156,7 +166,7 @@ private struct ExtensionInstallSteps: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Firefox and other Firefox-based browsers").font(.headline)
             if model.hasSignedFirefoxPackage {
-                InstallStep(number: 1, text: "Click Add to open the extension in your browser, then confirm the prompt it shows.")
+                InstallStep(number: 1, text: "Click the button for your browser, then confirm the prompt it shows. Firefox keeps the extension up to date after that.")
                 HStack {
                     ForEach(model.firefoxTargets) { target in
                         Button("Add to \(target.name)") { model.installFirefoxExtension(in: target) }

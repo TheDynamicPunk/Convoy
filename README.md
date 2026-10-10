@@ -95,13 +95,14 @@ Loading it, once per browser:
 The app keeps that copy of the extension up to date, and browsers pick up
 changes when they restart.
 
-Firefox and the browsers built on it need a different extension build, which
-Settings → Browser offers once one of them is installed. Firefox only keeps an
-extension that Mozilla has signed, so a release build adds it with one click
-(**Add to Firefox**) and Firefox asks you to confirm. A build without the
-signed package can only load the extension temporarily, from
-`about:debugging`, until the browser quits. In private windows, allow the
-extension under Manage Extension → Run in Private Windows.
+Firefox and the browsers built on it use a separate extension build, which
+Settings → Browser offers once one of them is installed. Click **Add to
+Firefox** (or the name of your browser) and confirm the prompt Firefox shows.
+After that, Firefox keeps the extension up to date itself.
+
+Two Firefox limits: in private windows, allow the extension under Manage
+Extension → Run in Private Windows; and downloads from a container tab use the
+default container's cookies, not that container's own.
 
 ## Building from source
 

@@ -36,7 +36,9 @@ Release Firefox runs only extensions Mozilla has signed. Self-distribution
 AMO signs a version once. Bump `version` in `Extensions/Chromium/manifest.json`
 before signing a changed build.
 
-## Decide before the first signed release
+## Fixed once the first build is signed
+
+These are decided. Changing them later strands people who already installed.
 
 - **Extension ID** (`convoy@thedynamicpunk.github.io`) is permanent once signed.
   It must match `BrowserIntegration.firefoxExtensionID`; a test checks this.
@@ -56,6 +58,7 @@ before signing a changed build.
   save files" on, the user sees Firefox's dialog first, then Convoy takes over.
 - `fileSize` is unknown when the download is created, so the Re-link size
   check has nothing to compare for Firefox downloads.
-- Cookies come from the default store. Container tabs (and Zen workspaces tied
-  to a container) will download without their login cookies.
+- Cookies come from the default store. A download from a container tab (or a
+  Zen workspace tied to one) uses the default container's cookies for that
+  site, not the container's own, so it can fail or sign in as another account.
 - Private windows need the user to allow the extension there.

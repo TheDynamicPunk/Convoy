@@ -58,9 +58,7 @@ of keeping the project safe to work on.
 swift test                                     # unit tests
 ```
 
-One test failure is currently expected: the checked-in helper list is
-unsigned, so `testTheCommittedManifestVerifiesAgainstTheCompiledInKey` fails.
-Everything else should pass before you send a patch.
+All tests should pass before you send a patch.
 
 ### Toolchain
 
@@ -103,8 +101,12 @@ reporting 14 renders the whole app in the pre-26 design.
   bot-check helper are downloaded at runtime and verified against a checksum
   list. Shipping them inside the app would change the project's licensing and
   legal position.
-- **The browser extension (`Extensions/Chromium/`) is a Chromium extension.**
-  Safari is not supported and isn't planned.
+- **The browser extension is one codebase.** `Extensions/Chromium/` holds the
+  shared code and the Chromium manifest. The Firefox build is that same code
+  with `Extensions/Firefox/` laid over it by `Extensions/build-firefox.sh`;
+  anything Firefox needs differently goes in its adapter or behind a feature
+  check, never in a copy of a shared file. Safari is not supported and isn't
+  planned.
 - **Match the surrounding code**: the same comment density, naming and
   structure as the file you're editing. Comments explain *why*, not *what*.
 - **Tests belong with behaviour changes**, in `Tests/DownloadEngineTests`.
