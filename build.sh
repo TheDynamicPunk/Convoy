@@ -196,6 +196,27 @@ fi
 cp "${PROJECT_DIR}/Resources/MenuBarIcon.png" "${RESOURCES_DIR}/MenuBarIcon.png"
 cp "${PROJECT_DIR}/Resources/MenuBarIcon@2x.png" "${RESOURCES_DIR}/MenuBarIcon@2x.png"
 
+# Licence texts. Convoy is GPL and embeds Sparkle (MIT-style, with its own
+# bundled components), and both require the notice to travel with the binary:
+# someone who only ever receives the .pkg or .dmg never sees the repo. Required,
+# not optional, for the same reason as the icons above.
+for notice in LICENSE THIRD_PARTY_NOTICES.md; do
+    if [ ! -f "${PROJECT_DIR}/${notice}" ]; then
+        echo "ERROR: ${notice} not found. Releases must ship their licence texts."
+        exit 1
+    fi
+    cp "${PROJECT_DIR}/${notice}" "${RESOURCES_DIR}/${notice}"
+done
+
+# Credits displayed in the native About Convoy window (the links to the
+# source, the licence and these notices). Required for the same reason as the
+# texts above: skipping it quietly would ship an About window with no links.
+if [ ! -f "${PROJECT_DIR}/Resources/Credits.rtf" ]; then
+    echo "ERROR: Resources/Credits.rtf not found. The About window would have no links."
+    exit 1
+fi
+cp "${PROJECT_DIR}/Resources/Credits.rtf" "${RESOURCES_DIR}/Credits.rtf"
+
 # ---------------------------------------------------------------------------
 # Sign
 #

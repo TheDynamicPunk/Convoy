@@ -115,6 +115,6 @@ reporting 14 renders the whole app in the pre-26 design.
 
 ## Reporting a bug
 
-Include the macOS version, the app version (Settings → Advanced → About), the
+Include the macOS version, the app version (Convoy → About Convoy), the
 site or link if relevant, and what you expected versus what happened. For
 browser integration problems, Settings → Browser shows the connection state.

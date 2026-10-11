@@ -83,12 +83,6 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            // About then Updates, the order System Settings > General uses.
-            Section("About") {
-                LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
-                LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
-            }
-
             UpdatesSection()
 
             Section {

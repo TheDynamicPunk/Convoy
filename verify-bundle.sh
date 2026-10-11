@@ -203,6 +203,22 @@ else
     fail "SUPublicEDKey is not a valid Ed25519 public key -- Sparkle will refuse to start"
 fi
 
+# --- 5d. Licence texts and credits ------------------------------------------
+#
+# GPL and the licences of what is embedded (Sparkle) require the notices to
+# travel with the binary, and someone who only receives the .pkg or .dmg never
+# sees the repo. Credits.rtf is what gives the About window its links. A bundle
+# missing any of these runs perfectly, so nothing but this gate would notice.
+echo ""
+echo "licences and credits"
+for f in LICENSE THIRD_PARTY_NOTICES.md Credits.rtf; do
+    if [ -s "${APP_DIR}/Contents/Resources/${f}" ]; then
+        pass "present: Resources/${f}"
+    else
+        fail "missing or empty: Resources/${f}"
+    fi
+done
+
 # --- 6. Designated requirements --------------------------------------------
 #
 # IPCPeerVerification builds its trust requirement out of the sibling

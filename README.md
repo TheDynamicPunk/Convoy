@@ -237,4 +237,9 @@ own licences and are not distributed with this app.
 
 - Inspired by Internet Download Manager (IDM)
 - YouTube support stands on [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- Automatic updates use [Sparkle](https://github.com/sparkle-project/Sparkle)
 - Built with Swift, SwiftUI and Swift Concurrency
+
+Licences of the software Convoy includes are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which also ships inside the
+app.
