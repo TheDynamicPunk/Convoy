@@ -136,32 +136,31 @@ public actor MediaMuxer {
             throw MuxError.nativeExportUnavailable
         }
 
-        // Both tracks are inserted over one shared span, and inserting over
-        // each track's *own* declared duration instead is a real bug rather
-        // than a style choice.
+        // Both tracks are inserted over one shared span.
         //
-        // YouTube's DASH mp4 files declare a duration in their header that is
-        // exactly twice the truth, and AVFoundation believes it — measured on
-        // three unrelated videos: 19s read as 37.87, 635s as 1269.13, 213s as
-        // 426.08. The sample data is fine; only the header lies. Insert that
-        // declared range and the export dutifully produces a file of the
-        // stated length, which ffmpeg then reports at half the real frame rate
-        // (15fps becoming 7.49fps) — a file that looks plausible and plays
-        // wrong. The paired m4a audio declares its duration correctly, which
-        // is why the shorter of the two is the trustworthy one here.
+        // Declared durations cannot be used: a fragmented MP4 whose moov
+        // declares a duration while its moof fragments carry the same samples
+        // reports moov + fragments (2x) in `asset.duration` and
+        // `track.timeRange`, for video and audio alike. Exporting that range
+        // stretches the final video sample across the excess.
         //
-        // `durationSec` narrows it further when the caller knows the real
-        // figure (yt-dlp and the DASH manifest both report it). Everything is
-        // combined with `min` so this can only ever bound the span, never
-        // extend it past media that actually exists.
-        //
-        // The cost is that genuinely mismatched tracks get trimmed to the
-        // shorter. For a video and its own audio — the only pairing this app
-        // makes — they describe one timeline, so there is nothing to lose.
-        var span = CMTimeMinimum(
+        // The span is the real playing time from each track's sample table
+        // (`playingTime`), bounded by the declared durations (fallback when
+        // the samples cannot be read) and by `durationSec` when known. The
+        // `min` means it can only shrink the span. Tracks of unequal length
+        // are trimmed to the shorter.
+        let declared = CMTimeMinimum(
             try await videoAsset.load(.duration),
             try await audioAsset.load(.duration)
         )
+        var span = declared
+        if let video = Self.playingTime(of: videoTrack),
+           let audio = Self.playingTime(of: audioTrack) {
+            span = CMTimeMinimum(span, CMTimeMinimum(video, audio))
+            if abs(declared.seconds - span.seconds) > 1 {
+                logger.notice("Declared duration \(declared.seconds, privacy: .public)s is not the real one; using \(span.seconds, privacy: .public)s measured from the samples")
+            }
+        }
         if let durationSec, durationSec > 0 {
             span = CMTimeMinimum(span, CMTime(seconds: durationSec, preferredTimescale: 600))
         }
@@ -227,6 +226,21 @@ public actor MediaMuxer {
         }
         logger.notice("Native mux complete task=\(taskID, privacy: .public): \(written.lastPathComponent)")
         return written
+    }
+
+    // MARK: - Measuring
+
+    /// Playing time of `track` from its sample table: decode timestamp plus
+    /// duration of the last sample in decode order, i.e. the sum of all sample
+    /// durations. Uses the decode clock, not presentation time, because B-frame
+    /// reordering shifts the presentation end by one frame.
+    ///
+    /// Nil when the track provides no sample cursors.
+    private static func playingTime(of track: AVAssetTrack) -> CMTime? {
+        guard let last = track.makeSampleCursorAtLastSampleInDecodeOrder() else { return nil }
+        let end = last.decodeTimeStamp + last.currentSampleDuration
+        guard end.isNumeric, end > .zero else { return nil }
+        return end
     }
 
     // MARK: - Cancel
