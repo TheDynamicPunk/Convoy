@@ -74,6 +74,7 @@ final class PendingOpenIntent: ObservableObject {
     static let shared = PendingOpenIntent()
 
     private var youtubeURL: String?
+    private var openBrowserSettingsRequested = false
 
     func store(youtubeURL url: String) {
         self.youtubeURL = url
@@ -85,6 +86,15 @@ final class PendingOpenIntent: ObservableObject {
     func takeYouTubeURL() -> String? {
         defer { youtubeURL = nil }
         return youtubeURL
+    }
+
+    func storeOpenBrowserSettings() {
+        self.openBrowserSettingsRequested = true
+    }
+
+    func takeOpenBrowserSettings() -> Bool {
+        defer { openBrowserSettingsRequested = false }
+        return openBrowserSettingsRequested
     }
 }
 
@@ -135,30 +145,46 @@ struct ConvoyApp: App {
                     // not a capture notification, so it's unconditional and
                     // not gated by bringWindowToFrontOnCapture below.
                     appLogger.info("onOpenURL pid=\(ProcessInfo.processInfo.processIdentifier, privacy: .public) url=\(url.absoluteString)")
-                    guard url.host == "add",
-                          let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                          let downloadURL = components.queryItems?.first(where: { $0.name == "url" })?.value,
-                          !downloadURL.isEmpty else {
+                    if url.host == "add",
+                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                       let downloadURL = components.queryItems?.first(where: { $0.name == "url" })?.value,
+                       !downloadURL.isEmpty {
+                        appLogger.info("onOpenURL: parked+posted \(downloadURL)")
+                        // Park it *and* post: see PendingOpenIntent for why the
+                        // notification alone loses cold-launch hand-offs.
+                        PendingOpenIntent.shared.store(youtubeURL: downloadURL)
+                        NotificationCenter.default.post(name: .openYouTubeDownload, object: nil, userInfo: ["url": downloadURL])
+                        // This IS a capture that needs a decision (pick a
+                        // quality/format before anything downloads) — gated by
+                        // alwaysFocusForRequiredInput, not bringWindowToFrontOnCapture:
+                        // that setting is for silent captures with nothing to
+                        // decide, this one blocks until someone picks a format.
+                        // showMainWindow() rather than a bare NSApp.activate: the
+                        // shared, already-correct implementation (deminiaturizes,
+                        // creates the window fresh if none exists) instead of
+                        // assuming a window is already there to activate.
+                        if settings.alwaysFocusForRequiredInput {
+                            MainWindowTracker.shared.showMainWindow()
+                        }
+                    } else if url.host == "settings",
+                              url.pathComponents.dropFirst().first == "browser" {
+                        // convoy://settings/browser — deep-links to the Browser settings tab.
+                        // Sent by the extension popup when the native host isn’t registered.
+                        appLogger.info("onOpenURL: opening settings/browser")
+                        UserDefaults.standard.set("browser", forKey: "settingsSelectedSection")
+                        NSApp.activate(ignoringOtherApps: true)
+                        PendingOpenIntent.shared.storeOpenBrowserSettings()
+                        NotificationCenter.default.post(name: .openBrowserSettings, object: nil)
+                        // Trigger SwiftUI’s Settings scene via its App-menu item —
+                        // the only stable public entry point into the scene’s internal handler.
+                        if let settingsItem = NSApp.mainMenu?.items.first?.submenu?.items.first(where: { $0.keyEquivalent == "," }),
+                           let action = settingsItem.action {
+                            NSApp.sendAction(action, to: settingsItem.target, from: settingsItem)
+                        }
+                        SettingsWindowTracker.shared.bringToFront()
+                    } else {
                         NSApp.activate(ignoringOtherApps: true)
                         appLogger.info("onOpenURL: not an add-with-url request, activating only")
-                        return
-                    }
-                    appLogger.info("onOpenURL: parked+posted \(downloadURL)")
-                    // Park it *and* post: see PendingOpenIntent for why the
-                    // notification alone loses cold-launch hand-offs.
-                    PendingOpenIntent.shared.store(youtubeURL: downloadURL)
-                    NotificationCenter.default.post(name: .openYouTubeDownload, object: nil, userInfo: ["url": downloadURL])
-                    // This IS a capture that needs a decision (pick a
-                    // quality/format before anything downloads) — gated by
-                    // alwaysFocusForRequiredInput, not bringWindowToFrontOnCapture:
-                    // that setting is for silent captures with nothing to
-                    // decide, this one blocks until someone picks a format.
-                    // showMainWindow() rather than a bare NSApp.activate: the
-                    // shared, already-correct implementation (deminiaturizes,
-                    // creates the window fresh if none exists) instead of
-                    // assuming a window is already there to activate.
-                    if settings.alwaysFocusForRequiredInput {
-                        MainWindowTracker.shared.showMainWindow()
                     }
                 }
         }
@@ -193,6 +219,10 @@ struct ConvoyApp: App {
         Settings {
             SettingsView()
                 .environmentObject(settings)
+                .background(WindowAccessor { window in
+                    SettingsWindowTracker.shared.register(window)
+                    SettingsWindowTracker.shared.bringToFront()
+                })
         }
     }
 }
@@ -255,4 +285,5 @@ extension Notification.Name {
     // userInfo["url"] carries the YouTube watch-page URL as a String.
     static let openYouTubeDownload = Notification.Name("openYouTubeDownload")
     static let deleteAllCompleted = Notification.Name("deleteAllCompleted")
+    static let openBrowserSettings = Notification.Name("openBrowserSettings")
 }

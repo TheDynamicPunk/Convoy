@@ -45,6 +45,8 @@ enum ActiveSheet: Identifiable {
 }
 
 struct ContentView: View {
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage("settingsSelectedSection") private var selectedSectionName = "general"
     @EnvironmentObject var downloadManager: DownloadManager
     @ObservedObject private var browserSetup = BrowserSetupModel.shared
     @State private var selectedCategory: DownloadCategory = .all
@@ -380,6 +382,12 @@ struct ContentView: View {
         // AddDownloadsView's own init parses and kicks off the yt-dlp
         // format fetch immediately, so the picker is already loading by the
         // time the sheet animates in.
+        .onReceive(NotificationCenter.default.publisher(for: .openBrowserSettings)) { _ in
+            _ = PendingOpenIntent.shared.takeOpenBrowserSettings()
+            selectedSectionName = "browser"
+            openSettings()
+            SettingsWindowTracker.shared.bringToFront()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openYouTubeDownload)) { note in
             guard let url = note.userInfo?["url"] as? String else { return }
             appLogger.info("ContentView.onReceive openYouTubeDownload \(url)")
@@ -393,6 +401,11 @@ struct ContentView: View {
         // above exists — see PendingOpenIntent. Draining on appear covers that
         // ordering; whichever path wins, the other finds nothing left to do.
         .onAppear {
+            if PendingOpenIntent.shared.takeOpenBrowserSettings() {
+                selectedSectionName = "browser"
+                openSettings()
+                SettingsWindowTracker.shared.bringToFront()
+            }
             if let parked = PendingOpenIntent.shared.takeYouTubeURL() {
                 appLogger.info("ContentView.onAppear drained parked \(parked)")
                 presentYouTubeDownload(parked)

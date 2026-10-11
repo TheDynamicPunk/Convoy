@@ -29,32 +29,58 @@ captureToggle.addEventListener('change', () => {
 });
 
 // ── App status ─────────────────────────────────────────────────────────────
-// The host answers ping itself and reports whether the app's IPC server
-// answered it. Any failure to get that far reads as "not running".
+// ping → host → IPC server. Any failure = "not running".
+// Two error classes:
+//   • host not found  — manifest not registered; native messaging unusable.
+//   • everything else — host exists but app not running; use normal path.
 
 let opening = false;
+let hostNotInstalled = false;
 
-function showStatus(running) {
+// Chrome: "Specified native messaging host not found."
+// Firefox: "No such native application …"
+function isHostNotFoundError(msg) {
+  return /not found|no such native/i.test(msg || '');
+}
+
+function showStatus(running, notInstalled) {
+  hostNotInstalled = !!notInstalled;
   statusDot.className = 'dot ' + (running ? 'on' : 'off');
-  statusText.textContent = running ? 'Connected to Convoy'
-    : opening ? 'Opening Convoy…' : 'Convoy isn’t running';
+  if (running) {
+    statusText.textContent = 'Connected to Convoy';
+    opening = false;
+  } else if (notInstalled) {
+    statusText.textContent = 'Finish setup in the Convoy app';
+  } else {
+    statusText.textContent = opening ? 'Opening Convoy…' : 'Convoy isn\u2019t running';
+  }
   openBtn.hidden = running;
-  openBtn.disabled = opening;
-  if (running) opening = false;
+  openBtn.textContent = notInstalled ? 'Open Convoy' : 'Open';
+  openBtn.disabled = opening && !notInstalled;
 }
 
 function checkStatus() {
   chrome.runtime.sendNativeMessage(NATIVE_HOST, { type: 'ping' }, (response) => {
-    showStatus(!chrome.runtime.lastError && response?.appRunning === true);
+    const err = chrome.runtime.lastError;
+    if (err && isHostNotFoundError(err.message)) {
+      showStatus(false, true);
+    } else {
+      showStatus(!err && response?.appRunning === true, false);
+    }
   });
 }
 
-// Routed through the background worker: it outlives this popup, and its
-// launch path also replays a download that failed because the app was closed.
+// Open button: routed through the background worker (survives popup close and
+// replays a pending download). When the host is missing, bypass the worker —
+// native messaging is unavailable — and open convoy://settings/browser directly.
 openBtn.addEventListener('click', () => {
+  if (hostNotInstalled) {
+    chrome.tabs.create({ url: 'convoy://settings/browser' });
+    window.close();
+    return;
+  }
   opening = true;
-  showStatus(false);
-  // A failed launch reports itself as a notification; just re-enable the button.
+  showStatus(false, false);
   setTimeout(() => { opening = false; checkStatus(); }, 12000);
   chrome.runtime.sendMessage({ type: 'openConvoyApp' });
 });

@@ -39,6 +39,12 @@ struct SettingsView: View {
         // toolbar layout already centers and spaces these correctly.
         .frame(width: 640, height: 400)
         .preferredColorScheme(settings.theme.colorScheme)
+        .background(WindowAccessor { window in
+            SettingsWindowTracker.shared.register(window)
+        })
+        .onAppear {
+            SettingsWindowTracker.shared.bringToFront()
+        }
     }
 }
 

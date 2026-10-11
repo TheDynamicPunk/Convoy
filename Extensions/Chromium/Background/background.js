@@ -816,12 +816,22 @@ function promptToOpenApp(reason) {
   });
 }
 
-// foreground: the user clicked an Open control, so bring the app forward.
-// The automatic launch after a capture stays in the background.
+// foreground: user-initiated open (bring to front); false = background launch after capture.
+// Host-not-found is handled separately: open convoy://settings/browser instead of
+// firing promptToOpenApp, which would just echo the OS "No such native application" text.
+function isHostNotFoundError(msg) {
+  return /not found|no such native/i.test(msg || '');
+}
+
 function openAppAndRetry(foreground = false) {
   chrome.runtime.sendNativeMessage(NATIVE_HOST, { type: 'launchApp', payload: { foreground } }, (response) => {
-    if (chrome.runtime.lastError || !response?.success) {
-      promptToOpenApp(response?.error || chrome.runtime.lastError?.message || 'Unknown error');
+    const errMsg = chrome.runtime.lastError?.message;
+    if (errMsg && isHostNotFoundError(errMsg)) {
+      chrome.tabs.create({ url: 'convoy://settings/browser' });
+      return;
+    }
+    if (errMsg || !response?.success) {
+      promptToOpenApp(response?.error || errMsg || 'Unknown error');
       return;
     }
     if (pendingRetryPayload) {
