@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Convoy",
   "short_name": "Convoy",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+SNBVOvwrTKmhIp0k0ifPwo2/O0iV6+jHLVS0viNTo+Vp3Sq7kLBNTpWFbBKa73104dmqCM1N18vRf25X4sgwERjaCTDkC39R/LBaeLdPRcLRXSv1vyBxcfRvfUOoGlvk16XsM3XtOp8vTzCu8ry4jGmN0DHX0GIk3+Zy1JeRHODXdXQMU6D4T5c5n01ThI5Dt/bQoBOlVMM0ROYTiuUrvvT+aJRLgCo+e1usFiCUwAcR40pld60iB2bxSPnytaKV8iGpbbYvpi/z8mAnosnejvOurKUN8ADzR7u5FQbfarNoyGsOt8VIk2HvUL5XnnhKrQo1yG9PInPAW5VhoS+wIDAQAB",
   "description": "Multi-threaded download manager with browser integration",
   "icons": {
