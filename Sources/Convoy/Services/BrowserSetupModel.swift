@@ -56,6 +56,10 @@ final class BrowserSetupModel: ObservableObject {
                 do { try integration.syncExtension() } catch {
                     appLogger.error("Extension folder sync failed: \(error.localizedDescription)")
                 }
+                let migrated = integration.migrateLegacyFiles()
+                if !migrated.isEmpty {
+                    appLogger.notice("Moved browser files: \(migrated.map(\.name).joined(separator: ", "), privacy: .public)")
+                }
                 let repaired = integration.repairExisting()
                 if !repaired.isEmpty {
                     appLogger.notice("Repointed browser files: \(repaired.map(\.name).joined(separator: ", "), privacy: .public)")

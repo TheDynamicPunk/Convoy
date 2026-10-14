@@ -16,7 +16,7 @@ macOS asks you to approve it once — see [Installing](#installing).
   that don't support ranges.
 - **Pause and resume**, including across quitting and reopening the app.
 - **Browser integration** for Chromium browsers (Chrome, Brave, Edge, Vivaldi,
-  Opera, Arc, Chromium) and Firefox-based ones (Firefox, Zen, Floorp,
+  Opera, Arc, Helium, Chromium) and Firefox-based ones (Firefox, Zen, Floorp,
   LibreWolf, Waterfox): intercepts downloads, adds right-click items for
   links, images and media, and shows a download button over videos it finds on
   a page. Sends the page's cookies and headers so downloads behind a login
@@ -146,7 +146,9 @@ later.
 4. The app starts the download and brings its window forward.
 
 The app registers the host with each browser itself, by writing a small file
-into that browser's own folder, and repoints those files if the app is moved.
+into the folder that browser reads, and repoints those files if the app is
+moved. Most browsers have a folder of their own. Arc reads Chrome's, so the two
+share one file and appear as one row in Settings → Browser.
 
 ## Architecture
 

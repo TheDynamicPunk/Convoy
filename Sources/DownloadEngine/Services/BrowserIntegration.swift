@@ -49,8 +49,15 @@ public struct BrowserIntegration: Sendable {
                 dataFolder: "Vivaldi"),
         Browser(id: "opera", name: "Opera", bundleIdentifier: "com.operasoftware.Opera",
                 dataFolder: "com.operasoftware.Opera"),
+        // Arc reads Chrome's NativeMessagingHosts folder, not its own, so it
+        // shares Chrome's file and appears in Settings as one row with it.
         Browser(id: "arc", name: "Arc", bundleIdentifier: "company.thebrowser.Browser",
-                dataFolder: "Arc/User Data"),
+                dataFolder: "Google/Chrome"),
+        // Helium looks in its own folder first, then falls back to Chrome's
+        // (scan-chrome-native-messaging-hosts.patch). Its own folder keeps it
+        // working when Chrome isn't set up or isn't installed.
+        Browser(id: "helium", name: "Helium", bundleIdentifier: "net.imput.helium",
+                dataFolder: "net.imput.helium"),
         // Firefox, Zen and Floorp read the one shared Mozilla folder; LibreWolf
         // and Waterfox patch in their own. Zen's own folder is ignored.
         Browser(id: "firefox", name: "Firefox", bundleIdentifier: "org.mozilla.firefox",
@@ -196,6 +203,45 @@ public struct BrowserIntegration: Sendable {
                 return false
             }
         }
+    }
+
+    /// Where earlier versions wrote a browser's file, before it was found to
+    /// read somewhere else.
+    private static let legacyDataFolders: [(browserID: String, dataFolder: String)] = [
+        ("arc", "Arc/User Data"),
+    ]
+
+    /// Launch step: a file an earlier version wrote to the wrong folder is
+    /// registered where the browser reads, then removed from the old place, so
+    /// someone who set a browser up keeps it working. Only files that name our
+    /// host are touched, and nothing runs from an unstable location.
+    @discardableResult
+    public func migrateLegacyFiles() -> [Browser] {
+        guard isLocationStable else { return [] }
+        var migrated: [Browser] = []
+        for legacy in Self.legacyDataFolders {
+            guard let browser = Self.browsers.first(where: { $0.id == legacy.browserID }) else { continue }
+            let url = applicationSupport
+                .appendingPathComponent(legacy.dataFolder, isDirectory: true)
+                .appendingPathComponent("NativeMessagingHosts", isDirectory: true)
+                .appendingPathComponent("\(Self.hostName).json")
+            guard isOurFile(at: url) else { continue }
+            do {
+                // Register first: if this throws, the old file stays.
+                try setUp(browser)
+                try FileManager.default.removeItem(at: url)
+                migrated.append(browser)
+            } catch {
+                Self.logger.error("Migration failed for \(browser.name, privacy: .public): \(error.localizedDescription)")
+            }
+        }
+        return migrated
+    }
+
+    private func isOurFile(at url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["name"] as? String == Self.hostName
     }
 
     private func desiredManifest(for browser: Browser) -> [String: Any]? {

@@ -212,4 +212,104 @@ final class BrowserIntegrationTests: XCTestCase {
         XCTAssertNotEqual(subject.firefoxExtensionFolder, subject.extensionFolder)
         XCTAssertNil(subject.firefoxPackage)
     }
+
+    // MARK: - Arc and Helium
+
+    private let arc = BrowserIntegration.browsers.first { $0.id == "arc" }!
+    private let helium = BrowserIntegration.browsers.first { $0.id == "helium" }!
+
+    func testArcSharesChromesFile() throws {
+        let subject = integration(host: try makeHost("A"))
+
+        try subject.setUp(arc)
+
+        XCTAssertEqual(subject.manifestURL(for: arc), subject.manifestURL(for: chrome))
+        XCTAssertEqual(subject.manifestURL(for: arc).path,
+                       appSupport.path + "/Google/Chrome/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json")
+        XCTAssertEqual(subject.status(of: chrome), .setUp)
+    }
+
+    func testHeliumHasItsOwnFileAndIsFoundByBundleIdentifier() throws {
+        let subject = integration(host: try makeHost("A"), installed: ["net.imput.helium"])
+
+        try subject.setUp(helium)
+
+        XCTAssertEqual(helium.bundleIdentifier, "net.imput.helium")
+        XCTAssertEqual(subject.manifestURL(for: helium).path,
+                       appSupport.path + "/net.imput.helium/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json")
+        XCTAssertEqual(try manifest(subject, helium)["allowed_origins"] as? [String],
+                       ["chrome-extension://jfnchkplpoknchbbbnpgobnoolhdahmj/"])
+        XCTAssertEqual(subject.status(of: helium), .setUp)
+        XCTAssertEqual(subject.status(of: chrome), .notSetUp)
+        XCTAssertEqual(subject.relevantBrowsers().map(\.id), ["helium"])
+    }
+
+    func testRemovingChromeLeavesHeliumRegistered() throws {
+        let subject = integration(host: try makeHost("A"))
+        try subject.setUp(chrome)
+        try subject.setUp(helium)
+
+        try subject.remove(chrome)
+
+        XCTAssertEqual(subject.status(of: chrome), .notSetUp)
+        XCTAssertEqual(subject.status(of: helium), .setUp)
+    }
+
+    /// Browsers on one file are one row in Settings, and removing that row
+    /// removes the file for all of them. Sharing must be deliberate.
+    func testOnlyIntendedBrowsersShareAFile() {
+        let subject = integration(host: nil)
+        var groups: [String: [String]] = [:]
+        for browser in BrowserIntegration.browsers {
+            groups[subject.manifestURL(for: browser).path, default: []].append(browser.id)
+        }
+
+        let shared = groups.values.filter { $0.count > 1 }.map { $0.sorted() }.sorted { $0.joined() < $1.joined() }
+
+        XCTAssertEqual(shared, [["arc", "chrome"], ["firefox", "firefox-developer", "firefox-nightly", "floorp", "zen"]])
+    }
+
+    // MARK: - Files from earlier versions
+
+    private func writeLegacyArcFile(_ contents: [String: Any]) throws -> URL {
+        let url = appSupport.appendingPathComponent("Arc/User Data/NativeMessagingHosts/\(BrowserIntegration.hostName).json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: contents).write(to: url)
+        return url
+    }
+
+    func testAnArcFileFromAnEarlierVersionMovesToChromesFolder() throws {
+        let legacy = try writeLegacyArcFile(["name": BrowserIntegration.hostName, "path": "/old/NativeMessagingHost"])
+        let subject = integration(host: try makeHost("A"))
+
+        XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), ["arc"])
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+        XCTAssertEqual(subject.status(of: arc), .setUp)
+        XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])
+    }
+
+    func testMigrationLeavesOtherFilesAndUnstableLocationsAlone() throws {
+        let foreign = try writeLegacyArcFile(["name": "com.someone.else", "path": "/x"])
+        let subject = integration(host: try makeHost("A"))
+
+        XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path))
+        XCTAssertEqual(subject.status(of: arc), .notSetUp)
+
+        let ours = try writeLegacyArcFile(["name": BrowserIntegration.hostName, "path": "/old"])
+        let translocated = integration(host: try makeHost("T"), stable: false)
+
+        XCTAssertEqual(translocated.migrateLegacyFiles().map(\.id), [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ours.path))
+        XCTAssertEqual(translocated.status(of: arc), .notSetUp)
+    }
+
+    func testMigrationKeepsTheOldFileIfRegisteringFails() throws {
+        let legacy = try writeLegacyArcFile(["name": BrowserIntegration.hostName, "path": "/old"])
+        let subject = integration(host: nil)
+
+        XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
+    }
 }
