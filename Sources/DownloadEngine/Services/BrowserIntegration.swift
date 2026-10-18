@@ -30,8 +30,6 @@ public struct BrowserIntegration: Sendable {
         /// Both families read `NativeMessagingHosts/` inside it.
         let dataFolder: String
         public var family: Family = .chromium
-        /// Other identifiers the same browser has been seen under.
-        var alternateBundleIdentifiers: [String] = []
     }
 
     public static let browsers: [Browser] = [
@@ -58,8 +56,9 @@ public struct BrowserIntegration: Sendable {
         // working when Chrome isn't set up or isn't installed.
         Browser(id: "helium", name: "Helium", bundleIdentifier: "net.imput.helium",
                 dataFolder: "net.imput.helium"),
-        // Firefox, Zen and Floorp read the one shared Mozilla folder; LibreWolf
-        // and Waterfox patch in their own. Zen's own folder is ignored.
+        // Firefox, Zen, Floorp, LibreWolf and Waterfox read the one shared
+        // Mozilla folder (LibreWolf and Waterfox confirmed by their extension
+        // connecting with no file of their own). Zen's own folder is ignored.
         Browser(id: "firefox", name: "Firefox", bundleIdentifier: "org.mozilla.firefox",
                 dataFolder: "Mozilla", family: .gecko),
         Browser(id: "firefox-developer", name: "Firefox Developer Edition",
@@ -69,13 +68,12 @@ public struct BrowserIntegration: Sendable {
                 dataFolder: "Mozilla", family: .gecko),
         Browser(id: "zen", name: "Zen", bundleIdentifier: "app.zen-browser.zen",
                 dataFolder: "Mozilla", family: .gecko),
-        Browser(id: "floorp", name: "Floorp", bundleIdentifier: "org.mozilla.floorp",
-                dataFolder: "Mozilla", family: .gecko, alternateBundleIdentifiers: ["one.ablaze.floorp"]),
-        Browser(id: "librewolf", name: "LibreWolf", bundleIdentifier: "org.mozilla.librewolf",
-                dataFolder: "LibreWolf", family: .gecko,
-                alternateBundleIdentifiers: ["io.gitlab.librewolf-community"]),
+        Browser(id: "floorp", name: "Floorp", bundleIdentifier: "app.floorp.Floorp",
+                dataFolder: "Mozilla", family: .gecko),
+        Browser(id: "librewolf", name: "LibreWolf", bundleIdentifier: "net.librewolf.librewolf",
+                dataFolder: "Mozilla", family: .gecko),
         Browser(id: "waterfox", name: "Waterfox", bundleIdentifier: "net.waterfox.waterfox",
-                dataFolder: "Waterfox", family: .gecko),
+                dataFolder: "Mozilla", family: .gecko),
     ]
 
     public enum Status: Equatable, Sendable {
@@ -144,8 +142,7 @@ public struct BrowserIntegration: Sendable {
     }
 
     public func applicationURL(for browser: Browser) -> URL? {
-        ([browser.bundleIdentifier] + browser.alternateBundleIdentifiers)
-            .lazy.compactMap { applicationURL($0) }.first
+        applicationURL(browser.bundleIdentifier)
     }
 
     /// Installed browsers, plus any that still hold our file.

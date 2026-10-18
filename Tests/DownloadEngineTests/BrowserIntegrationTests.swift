@@ -165,7 +165,9 @@ final class BrowserIntegrationTests: XCTestCase {
 
     private let firefox = BrowserIntegration.browsers.first { $0.id == "firefox" }!
     private let zen = BrowserIntegration.browsers.first { $0.id == "zen" }!
+    private let floorp = BrowserIntegration.browsers.first { $0.id == "floorp" }!
     private let librewolf = BrowserIntegration.browsers.first { $0.id == "librewolf" }!
+    private let waterfox = BrowserIntegration.browsers.first { $0.id == "waterfox" }!
 
     func testFirefoxFileAllowsTheExtensionByIDNotByOrigin() throws {
         let subject = integration(host: try makeHost("A"))
@@ -180,21 +182,36 @@ final class BrowserIntegrationTests: XCTestCase {
         XCTAssertEqual(subject.status(of: firefox), .setUp)
     }
 
-    func testZenSharesFirefoxsFileAndLibreWolfKeepsItsOwn() throws {
+    func testZenFloorpLibreWolfAndWaterfoxShareFirefoxsFile() throws {
         let subject = integration(host: try makeHost("A"))
 
         try subject.setUp(firefox)
 
-        XCTAssertEqual(subject.manifestURL(for: zen), subject.manifestURL(for: firefox))
-        XCTAssertEqual(subject.status(of: zen), .setUp)
-        XCTAssertEqual(subject.status(of: librewolf), .notSetUp)
-        XCTAssertTrue(subject.manifestURL(for: librewolf).path.hasSuffix("/LibreWolf/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json"))
+        for browser in [zen, floorp, librewolf, waterfox] {
+            XCTAssertEqual(subject.manifestURL(for: browser), subject.manifestURL(for: firefox), browser.id)
+            XCTAssertEqual(subject.status(of: browser), .setUp, browser.id)
+        }
     }
 
-    func testABrowserIsFoundUnderAnAlternateBundleIdentifier() throws {
-        let subject = integration(host: try makeHost("A"), installed: ["io.gitlab.librewolf-community"])
+    /// Identifiers read from real installs with mdls (kMDItemCFBundleIdentifier).
+    /// LibreWolf and Floorp were wrong for a long time: a browser whose identifier
+    /// doesn't match is invisible to Settings and gets no Add to button. Only
+    /// browsers someone has actually checked belong in this list.
+    func testVerifiedBundleIdentifiersMatchRealInstalls() {
+        let verified = [
+            "arc": "company.thebrowser.Browser",
+            "brave": "com.brave.Browser",
+            "chrome": "com.google.Chrome",
+            "firefox": "org.mozilla.firefox",
+            "floorp": "app.floorp.Floorp",
+            "helium": "net.imput.helium",
+            "librewolf": "net.librewolf.librewolf",
+            "waterfox": "net.waterfox.waterfox",
+        ]
 
-        XCTAssertEqual(subject.relevantBrowsers().map(\.id), ["librewolf"])
+        for (id, bundleIdentifier) in verified {
+            XCTAssertEqual(BrowserIntegration.browsers.first { $0.id == id }?.bundleIdentifier, bundleIdentifier, id)
+        }
     }
 
     func testFirefoxExtensionFolderIsSyncedBesideChromes() throws {
@@ -266,7 +283,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
         let shared = groups.values.filter { $0.count > 1 }.map { $0.sorted() }.sorted { $0.joined() < $1.joined() }
 
-        XCTAssertEqual(shared, [["arc", "chrome"], ["firefox", "firefox-developer", "firefox-nightly", "floorp", "zen"]])
+        XCTAssertEqual(shared, [["arc", "chrome"], ["firefox", "firefox-developer", "firefox-nightly", "floorp", "librewolf", "waterfox", "zen"]])
     }
 
     // MARK: - Files from earlier versions
