@@ -24,6 +24,8 @@ public final class AppSettings: ObservableObject {
         case youtubeUseBrowserCookies
         case youtubeCookieBrowser
         case keepHelpersUpToDate
+        case downloadCategoriesEnabled
+        case downloadCategories
     }
     
     @AppStorage(Key.downloadDirectory.rawValue) public var downloadDirectory: String = ""
@@ -87,6 +89,42 @@ public final class AppSettings: ObservableObject {
     /// skips metered and Low Data Mode connections, since yt-dlp alone is
     /// over 50 MB.
     @AppStorage(Key.keepHelpersUpToDate.rawValue) public var keepHelpersUpToDate: Bool = true
+
+    /// Whether finished downloads are filed into folders by type or site. Off
+    /// by default: turning it on changes where every future download lands,
+    /// so that has to be the person's decision.
+    @AppStorage(Key.downloadCategoriesEnabled.rawValue) public var downloadCategoriesEnabled: Bool = false
+    /// The categories, as JSON. @AppStorage holds only simple values, so the
+    /// list is encoded into one string; use `downloadCategories` instead of
+    /// reading this.
+    @AppStorage(Key.downloadCategories.rawValue) private var downloadCategoriesJSON: String = ""
+
+    /// The person's categories in priority order (first match wins).
+    ///
+    /// Before anything has been saved this is the original set, so a fresh
+    /// install shows real categories (with routing still switched off) and
+    /// "Reset to Defaults" has something to return to. Once the person has
+    /// edited the list, it is exactly what they left, even if that is empty.
+    /// See `CategoryStorage` for the three cases.
+    public var downloadCategories: [DownloadCategory] {
+        get {
+            CategoryStorage.load(json: downloadCategoriesJSON, downloadsFolder: downloadDirectory)
+        }
+        set {
+            guard let json = CategoryStorage.encode(newValue) else { return }
+            objectWillChange.send()
+            downloadCategoriesJSON = json
+        }
+    }
+
+    /// Puts the original categories back, replacing whatever is there now.
+    /// Callers must confirm with the person first: this discards any category
+    /// they added or changed. It deliberately leaves the on/off switch alone,
+    /// since resetting the list is not a decision about whether to sort
+    /// downloads at all.
+    public func resetCategoriesToDefaults() {
+        downloadCategories = DownloadCategory.suggestedCategories(in: downloadDirectory)
+    }
 
     /// Browsers yt-dlp can read cookies from, limited to those that ship on or
     /// are common on macOS. Values are exactly the keywords yt-dlp's

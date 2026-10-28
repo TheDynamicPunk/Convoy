@@ -4,6 +4,7 @@ import DownloadEngine
 struct DownloadRowView: View {
     @ObservedObject var task: DownloadTask
     @EnvironmentObject var downloadManager: DownloadManager
+    @ObservedObject private var settings = AppSettings.shared
     var isSelected: Bool
     /// False while focus is outside the list: the selection then draws
     /// grey, as in Finder, since keys won't act on it.
@@ -61,6 +62,14 @@ struct DownloadRowView: View {
                     // The name gives way first when the row narrows.
                     statusPill
                         .fixedSize()
+
+                    if let categoryName = routedCategoryName {
+                        Text("→ \(categoryName)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .help(task.destinationURL.deletingLastPathComponent().path)
+                    }
                     
                     Spacer(minLength: 8)
                     
@@ -163,6 +172,18 @@ struct DownloadRowView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if let notice = task.categoryNotice {
+                    HStack(spacing: 5) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                        Text(notice)
+                            .font(.system(size: 11))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(.orange)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -295,7 +316,18 @@ struct DownloadRowView: View {
     }
     
     // MARK: - Status
-    
+
+    /// The name of the category that routed this download, if one did.
+    /// Falls back to the folder's name when the category was removed later,
+    /// so the row still says where its file went.
+    private var routedCategoryName: String? {
+        guard let categoryID = task.categoryID else { return nil }
+        if let match = settings.downloadCategories.first(where: { $0.id == categoryID }) {
+            return match.name
+        }
+        let folderName = task.destinationURL.deletingLastPathComponent().lastPathComponent
+        return folderName.isEmpty ? nil : folderName
+    }
 
     private var statusPill: some View {
         Group {

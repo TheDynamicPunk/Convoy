@@ -116,7 +116,7 @@ public final class DownloadManager: ObservableObject {
     /// skipConflictCheck suppresses the filename-match check — used internally
     /// for retry and conflict-resolution paths where the caller has already
     /// verified or cleared the conflict, so we don't loop back into the sheet.
-    public func addDownload(url: URL, destination: URL? = nil, filenameSource: FilenameSource? = nil, segmentCount: Int? = nil, customHeaders: [String: String] = [:], referrerURL: URL? = nil, skipConflictCheck: Bool = false) async throws -> DownloadTask {
+    public func addDownload(url: URL, destination: URL? = nil, filenameSource: FilenameSource? = nil, segmentCount: Int? = nil, customHeaders: [String: String] = [:], referrerURL: URL? = nil, folderIsExplicit: Bool = false, skipConflictCheck: Bool = false) async throws -> DownloadTask {
         let source = filenameSource ?? (destination == nil ? .originalURL : .userProvided)
         var dest = normalizedDestination(destination, fallbackURL: url)
         // Captured before any deduplication touches dest — this, not
@@ -148,7 +148,8 @@ public final class DownloadManager: ObservableObject {
                 incomingFilenameSource: source,
                 existingTask: existing,
                 suggestedAlternativeName: altName,
-                resolvingTaskID: nil
+                resolvingTaskID: nil,
+                incomingFolderIsExplicit: folderIsExplicit
             ))
             throw DownloadConflictError()
         }
@@ -174,7 +175,8 @@ public final class DownloadManager: ObservableObject {
             // userProvidedDestinationName, mirroring Chrome's refusal to
             // override a name the user typed. defaultDestination (URL path)
             // is the false branch, so Content-Disposition does win there.
-            filenameSource: source
+            filenameSource: source,
+            folderIsExplicit: folderIsExplicit
         )
         task.markDestinationMissingIfNeeded()
         
@@ -228,6 +230,7 @@ public final class DownloadManager: ObservableObject {
         videoBytes: Int64?,
         destination: URL,
         filenameSource: FilenameSource = .extractorMetadata,
+        folderIsExplicit: Bool = false,
         skipConflictCheck: Bool = false
     ) async throws -> DownloadTask {
         let startsAutomatically = settings.autoStartDownloads
@@ -238,6 +241,16 @@ public final class DownloadManager: ObservableObject {
         // final the moment a quality is picked — title plus quality token —
         // so, like a stream's, it never needs a later mid-flight recheck.
         let originalName = destination.lastPathComponent
+
+        // Which category this belongs in. Decided up front, before the duplicate
+        // check, so the one suspension point is not between that check and the
+        // append; see routeAtAddTime. YouTube names are final here (title plus
+        // quality token), so there is nothing later to wait for.
+        let routed = await routeAtAddTime(
+            destination: destination,
+            hosts: CategoryRouter.hosts(from: [pageURL]),
+            folderIsExplicit: folderIsExplicit
+        )
 
         // Conflict check — the same duplicate detection as the other two add
         // paths, which this one skipped entirely until now. Without it,
@@ -262,11 +275,12 @@ public final class DownloadManager: ObservableObject {
                 resolvingTaskID: nil,
                 incomingYouTubeInfo: .init(
                     formatID: formatID, mergeAudio: mergeAudio, videoBytes: videoBytes
-                )
+                ),
+                incomingFolderIsExplicit: folderIsExplicit
             ))
             throw DownloadConflictError()
         }
-        let dest = deduplicatedDestination(for: destination)
+        let dest = deduplicatedDestination(for: routed.destination)
         // Only when both halves are known: a partial sum would be worse than
         // no estimate, since the total would still have to grow later.
         let expectedTotal: Int64 = {
@@ -283,8 +297,11 @@ public final class DownloadManager: ObservableObject {
             initialStatus: startsAutomatically ? .waiting : .paused,
             totalBytes: expectedTotal,
             referrerURL: pageURL,
-            filenameSource: filenameSource
+            filenameSource: filenameSource,
+            folderIsExplicit: folderIsExplicit,
+            categoryID: routed.categoryID
         )
+        if let notice = routed.notice { task.noteCategoryFallback(notice) }
         task.configureYouTubeDownload(formatSelector: selector, pageURL: pageURL)
         task.markDestinationMissingIfNeeded()
 
@@ -321,6 +338,7 @@ public final class DownloadManager: ObservableObject {
         bandwidth: Int? = nil,
         preferredAudioLanguage: String? = nil,
         hlsAudioTracks: [HLSAudioCandidate]? = nil,
+        folderIsExplicit: Bool = false,
         skipConflictCheck: Bool = false
     ) async throws -> DownloadTask {
         let source = filenameSource ?? (destination == nil ? .originalURL : .userProvided)
@@ -332,6 +350,16 @@ public final class DownloadManager: ObservableObject {
         let originalName = dest.lastPathComponent
         let startsAutomatically = settings.autoStartDownloads
         let audioLanguage = preferredAudioLanguage ?? settings.preferredAudioLanguage.nilIfEmpty
+
+        // Which category this belongs in; see addYouTubeDownload. A stream's
+        // name has no extension yet, so extension rules are matched against
+        // the assumed one (CategoryRouting.assumedStreamExtension).
+        let routed = await routeAtAddTime(
+            destination: dest,
+            matchName: CategoryRouting.streamMatchName(for: originalName),
+            hosts: CategoryRouter.hosts(from: [url, referrerURL]),
+            folderIsExplicit: folderIsExplicit
+        )
 
         // Conflict check — same duplicate-detection as addDownload.
         if !skipConflictCheck, let existing = existingTask(matchingURL: url, originalName: originalName) {
@@ -355,11 +383,12 @@ public final class DownloadManager: ObservableObject {
                     bandwidth: bandwidth,
                     preferredAudioLanguage: audioLanguage,
                     hlsAudioTracks: hlsAudioTracks
-                )
+                ),
+                incomingFolderIsExplicit: folderIsExplicit
             ))
             throw DownloadConflictError()
         }
-        dest = deduplicatedDestination(for: dest)
+        dest = deduplicatedDestination(for: routed.destination)
 
         let task = DownloadTask(
             url: url,
@@ -371,8 +400,11 @@ public final class DownloadManager: ObservableObject {
             initialStatus: startsAutomatically ? .waiting : .paused,
             customHeaders: customHeaders,
             referrerURL: referrerURL,
-            filenameSource: source
+            filenameSource: source,
+            folderIsExplicit: folderIsExplicit,
+            categoryID: routed.categoryID
         )
+        if let notice = routed.notice { task.noteCategoryFallback(notice) }
         task.configureStreamDownload(
             streamURL: url,
             streamType: streamType,
@@ -973,6 +1005,7 @@ public final class DownloadManager: ObservableObject {
                 videoBytes: info.videoBytes,
                 destination: dest,
                 filenameSource: conflict.incomingFilenameSource,
+                folderIsExplicit: conflict.incomingFolderIsExplicit,
                 skipConflictCheck: true
             )
         }
@@ -988,6 +1021,7 @@ public final class DownloadManager: ObservableObject {
                 bandwidth: info.bandwidth,
                 preferredAudioLanguage: info.preferredAudioLanguage,
                 hlsAudioTracks: info.hlsAudioTracks,
+                folderIsExplicit: conflict.incomingFolderIsExplicit,
                 skipConflictCheck: true
             )
         }
@@ -997,6 +1031,7 @@ public final class DownloadManager: ObservableObject {
             filenameSource: conflict.incomingFilenameSource,
             customHeaders: conflict.incomingHeaders,
             referrerURL: conflict.incomingReferrer,
+            folderIsExplicit: conflict.incomingFolderIsExplicit,
             skipConflictCheck: true
         )
     }
@@ -1190,6 +1225,8 @@ public final class DownloadManager: ObservableObject {
                     referrerURL: snap.referrerURL,
                     forwardedURL: snap.forwardedURL,
                     filenameSource: snap.filenameSource ?? .originalURL,
+                    folderIsExplicit: snap.folderIsExplicit ?? false,
+                    categoryID: snap.categoryID,
                     createdAt: snap.createdAt ?? Date()
                 )
                 if let selector = snap.ytFormatSelector, let page = snap.ytPageURL {
@@ -1220,6 +1257,8 @@ public final class DownloadManager: ObservableObject {
                     initialStatus: .completed, totalBytes: snap.totalBytes,
                     downloadedBytes: snap.downloadedBytes,
                     filenameSource: snap.filenameSource ?? .originalURL,
+                    folderIsExplicit: snap.folderIsExplicit ?? false,
+                    categoryID: snap.categoryID,
                     createdAt: snap.createdAt ?? Date()
                 )
                 completedTasks.append(task)
@@ -1234,6 +1273,8 @@ public final class DownloadManager: ObservableObject {
                     referrerURL: snap.referrerURL,
                     forwardedURL: snap.forwardedURL,
                     filenameSource: snap.filenameSource ?? .originalURL,
+                    folderIsExplicit: snap.folderIsExplicit ?? false,
+                    categoryID: snap.categoryID,
                     createdAt: snap.createdAt ?? Date()
                 )
                 observeStatus(of: task)
@@ -1321,7 +1362,9 @@ public final class DownloadManager: ObservableObject {
                     id: task.id, url: task.url, destinationPath: task.destinationURL.path,
                     originalName: task.originalName, createdAt: task.createdAt,
                     priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
-                    kind: .urlExpired, totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
+                    kind: .urlExpired,
+                    folderIsExplicit: task.folderIsExplicit, categoryID: task.categoryID,
+                    totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
                     etag: task.etag, lastModified: task.lastModified,
                     lastValidatedAt: task.lastValidatedAt,
                     referrerURL: task.referrerURL,
@@ -1343,7 +1386,9 @@ public final class DownloadManager: ObservableObject {
                     id: task.id, url: task.url, destinationPath: task.destinationURL.path,
                     originalName: task.originalName, createdAt: task.createdAt,
                     priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
-                    kind: .active, totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
+                    kind: .active,
+                    folderIsExplicit: task.folderIsExplicit, categoryID: task.categoryID,
+                    totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
                     etag: task.etag, lastModified: task.lastModified,
                     lastValidatedAt: task.lastValidatedAt,
                     referrerURL: task.referrerURL,
@@ -1367,7 +1412,9 @@ public final class DownloadManager: ObservableObject {
                 id: task.id, url: task.url, destinationPath: task.destinationURL.path,
                 originalName: task.originalName, createdAt: task.createdAt,
                 priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
-                kind: .completed, totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
+                kind: .completed,
+                folderIsExplicit: task.folderIsExplicit, categoryID: task.categoryID,
+                totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
                 etag: task.etag, lastModified: task.lastModified,
                 lastValidatedAt: nil,
                 referrerURL: nil,
@@ -1402,7 +1449,10 @@ public final class DownloadManager: ObservableObject {
     }()
 }
 
-private struct PersistedDownloadTask: Codable {
+/// One row of downloads.json. Internal rather than private so the tests can
+/// decode a snapshot written by an older build; nothing outside this file
+/// should construct one.
+struct PersistedDownloadTask: Codable {
     enum Kind: String, Codable { case active, completed, urlExpired }
     let id: UUID
     let url: URL
@@ -1424,6 +1474,13 @@ private struct PersistedDownloadTask: Codable {
     let priorityRaw: Int
     let segmentCount: Int
     let kind: Kind
+    /// Optional, and `var` so the memberwise init defaults them to nil: both
+    /// are absent from every snapshot written before download categories
+    /// existed, and those must keep decoding (unlike originalName above,
+    /// which has no sensible default). A missing folderIsExplicit reads as
+    /// false, a missing categoryID as "no category applied".
+    var folderIsExplicit: Bool?
+    var categoryID: UUID?
     let totalBytes: Int64
     let downloadedBytes: Int64
     /// HTTP validators for detecting file changes on resume
@@ -1554,6 +1611,11 @@ public struct DuplicateDownloadConflict: Identifiable {
     /// request rebuilt as a plain byte-range download would fetch the watch
     /// page's HTML instead of the video.
     public let incomingYouTubeInfo: YouTubeInfo?
+    /// Whether the incoming request's folder was one a person picked. Carried
+    /// through so "Save as separate" and "Restart" recreate the download with
+    /// the same standing; without it a folder the person chose would quietly
+    /// become a suggestion that a category could then move.
+    public let incomingFolderIsExplicit: Bool
 
     public init(
         incomingURL: URL,
@@ -1565,7 +1627,8 @@ public struct DuplicateDownloadConflict: Identifiable {
         suggestedAlternativeName: String,
         resolvingTaskID: UUID?,
         incomingStreamInfo: StreamInfo? = nil,
-        incomingYouTubeInfo: YouTubeInfo? = nil
+        incomingYouTubeInfo: YouTubeInfo? = nil,
+        incomingFolderIsExplicit: Bool = false
     ) {
         self.incomingURL = incomingURL
         self.incomingHeaders = incomingHeaders
@@ -1577,6 +1640,7 @@ public struct DuplicateDownloadConflict: Identifiable {
         self.resolvingTaskID = resolvingTaskID
         self.incomingStreamInfo = incomingStreamInfo
         self.incomingYouTubeInfo = incomingYouTubeInfo
+        self.incomingFolderIsExplicit = incomingFolderIsExplicit
     }
 
     public struct YouTubeInfo {

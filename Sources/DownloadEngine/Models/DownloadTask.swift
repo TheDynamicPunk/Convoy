@@ -344,6 +344,29 @@ public final class DownloadTask: ObservableObject, Identifiable {
     public private(set) var filenameSource: FilenameSource
     public var userProvidedDestinationName: Bool { filenameSource == .userProvided }
 
+    /// Whether a person chose this download's FOLDER, as opposed to it being
+    /// the default folder or a suggestion. Independent of `filenameSource`,
+    /// which is about the name only: the New Download window can pass a
+    /// folder the person picked together with a name taken from the URL, and
+    /// the extension passes the default folder together with a media title.
+    /// A download categories rule may only move a download whose folder was
+    /// NOT explicit; a folder somebody picked always beats a rule.
+    public let folderIsExplicit: Bool
+
+    /// The DownloadCategory that routed this download, if one did. Kept so a
+    /// row can say where its file went and so the list can later be filtered
+    /// by category. Nil means no category applied (including every task
+    /// saved before categories existed). Never re-derived on resume: where a
+    /// download goes is decided once, and editing the categories afterwards
+    /// does not move a download that is already under way.
+    @Published public private(set) var categoryID: UUID?
+
+    /// Set when a category matched but its folder could not be used (drive
+    /// not connected, not writable) and the file stayed where it already was.
+    /// Not persisted: it describes the moment of routing, and the row that
+    /// shows it only needs it while the person is looking at the download.
+    @Published public private(set) var categoryNotice: String?
+
     /// The name this task's identity is compared against for duplicate
     /// detection — captured once at creation and never mutated by later
     /// suffixing ("(1)", "(2)", ...), unlike destinationURL. This is what
@@ -381,6 +404,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         forwardedURL: URL? = nil,
         userProvidedDestinationName: Bool = false,
         filenameSource: FilenameSource? = nil,
+        folderIsExplicit: Bool = false,
+        categoryID: UUID? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -400,6 +425,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         self.referrerURL = referrerURL
         self.forwardedURL = forwardedURL
         self.filenameSource = filenameSource ?? (userProvidedDestinationName ? .userProvided : .originalURL)
+        self.folderIsExplicit = folderIsExplicit
+        self.categoryID = categoryID
     }
     
     func start() async throws {
@@ -1012,6 +1039,19 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // other await in start() above.
         guard status == .starting || status == .downloading else { return }
 
+        // Settle which folder this belongs in BEFORE any segment or scratch
+        // file exists; see applyCategoryIfNeeded for why that order matters.
+        // The original and the resolved address are both offered, since a
+        // "from this site" rule can mean either the link that was clicked or
+        // the CDN it redirected to.
+        await applyCategoryIfNeeded(
+            categories: DownloadManager.shared.activeCategories,
+            hosts: CategoryRouter.hosts(from: [url, metadata.resolvedURL])
+        )
+        // A suspension point like the one above: a pause or cancel may have
+        // arrived while the folder was being prepared.
+        guard status == .starting || status == .downloading else { return }
+
         // A suspended-then-resumed conflict cancels the probe (see
         // markAwaitingConflictResolution), and _activeProbe is only nilled by
         // that path — use it to know whether the probe below is still live.
@@ -1508,6 +1548,65 @@ public final class DownloadTask: ObservableObject, Identifiable {
         let candidateURL = folder.appendingPathComponent(candidate.name)
         destinationURL = DownloadManager.shared.deduplicatedDestination(for: candidateURL, excluding: id)
         filenameSource = candidate.source
+    }
+
+    /// Files this download into the folder of the category it belongs to.
+    ///
+    /// INVARIANT: this must finish before anything is written beside the
+    /// destination. The merge, YouTube, mux and stream-assembly scratch files
+    /// (see DestinationScratchFile) are created in the destination's folder
+    /// so the final rename stays on one volume, and cleanup looks for them
+    /// there too. Changing the folder after one exists would strand it. This
+    /// is safe at the one place it is called, right after the probe's headers
+    /// are in and before segments are created: until then the only bytes on
+    /// disk are in the temporary directory.
+    ///
+    /// Does nothing for a folder the person chose, for a download a category
+    /// already routed (where a download goes is decided once, so editing the
+    /// categories never moves one that is under way), or when nothing
+    /// matches. `categories` is a parameter, not read from settings here, so
+    /// tests can drive it and nothing else has to be set up.
+    ///
+    /// If the category's folder cannot be used, the download stays where it
+    /// is and `categoryNotice` says why. Failing the download over a missing
+    /// folder would be worse than saving it in the default place.
+    func applyCategoryIfNeeded(categories: [DownloadCategory], hosts: [String]) async {
+        guard let route = CategoryRouting.route(
+            filename: destinationURL.lastPathComponent,
+            hosts: hosts,
+            categories: categories,
+            folderIsExplicit: folderIsExplicit,
+            alreadyRouted: categoryID != nil
+        ) else { return }
+
+        // Off the main actor: see CategoryFolder for why.
+        let folder = route.category.folder
+        let outcome = await Task.detached(priority: .userInitiated) {
+            CategoryFolder.prepare(folder)
+        }.value
+
+        switch outcome {
+        case .ready, .created:
+            destinationURL = DownloadManager.shared.deduplicatedDestination(
+                for: route.destination, excluding: id
+            )
+            categoryID = route.category.id
+            categoryNotice = nil
+            logger.notice("Routed task=\(self.id, privacy: .public) to category \(route.category.name, privacy: .public)")
+        case .unavailable(let reason):
+            categoryNotice = CategoryRouting.fallbackNotice(
+                category: route.category,
+                reason: reason,
+                savedTo: destinationURL.deletingLastPathComponent()
+            )
+            logger.notice("Category \(route.category.name, privacy: .public) unavailable for task=\(self.id, privacy: .public): \(reason.phrase, privacy: .public)")
+        }
+    }
+
+    /// For the add paths that route before the task exists (YouTube and
+    /// streams) and so can only report a fallback after creating it.
+    func noteCategoryFallback(_ notice: String) {
+        categoryNotice = notice
     }
 
     /// Called by DownloadManager the instant a genuine filename conflict is

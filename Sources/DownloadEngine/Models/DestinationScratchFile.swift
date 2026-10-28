@@ -13,6 +13,16 @@ import Foundation
 /// kind, so deleting a download leaves nothing beside its destination whatever
 /// kind of download it was. The temp-folder counterpart is
 /// `TaskScratchDirectory`.
+///
+/// INVARIANT for anything that moves a download to another folder (download
+/// categories do, once, right after the probe): the move must happen before
+/// the first of these files exists. They are created beside the destination
+/// and found again by `removeAll` through the destination's CURRENT folder,
+/// so changing the folder afterwards strands a partly written file in the
+/// old one with nothing left that knows its name. Until segments are
+/// created, a byte-range download has bytes only in the temp folder, which
+/// is why routing there is safe; YouTube and stream downloads write here
+/// from the start, so they are routed when the task is created instead.
 enum DestinationScratchFile: CaseIterable, Sendable {
     /// yt-dlp's single-format output, plus the `.part` and `.ytdl` files it
     /// writes beside it while downloading.

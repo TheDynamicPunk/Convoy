@@ -49,7 +49,7 @@ struct ContentView: View {
     @AppStorage("settingsSelectedSection") private var selectedSectionName = "general"
     @EnvironmentObject var downloadManager: DownloadManager
     @ObservedObject private var browserSetup = BrowserSetupModel.shared
-    @State private var selectedCategory: DownloadCategory = .all
+    @State private var selectedCategory: StatusFilter = .all
     @State private var searchText = ""
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
     /// Set only when the sidebar was hidden for lack of room, so widening the
@@ -475,7 +475,7 @@ struct ContentView: View {
     
     private var sidebar: some View {
         List(selection: $selectedCategory) {
-            ForEach(DownloadCategory.allCases) { category in
+            ForEach(StatusFilter.allCases) { category in
                 HStack {
                     Label {
                         Text(category.displayName)
@@ -731,7 +731,7 @@ struct ContentView: View {
         addDownloadsIntent = AddDownloadsIntent(url: url)
     }
 
-    private func badgeCount(for category: DownloadCategory) -> Int {
+    private func badgeCount(for category: StatusFilter) -> Int {
         let tasks = downloadManager.tasks
         let completed = downloadManager.completedTasks
         switch category {
@@ -954,7 +954,11 @@ private struct SidebarIcon: View {
     }
 }
 
-enum DownloadCategory: String, CaseIterable, Identifiable {
+/// The sidebar's list filter: All, Downloading, Completed, Paused, Failed.
+/// Named StatusFilter so it cannot be confused with the folder categories
+/// (`DownloadEngine.DownloadCategory`: Music, Books, ...), which sort files
+/// into folders and have nothing to do with a download's state.
+enum StatusFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case downloading = "Downloading"
     case completed = "Completed"

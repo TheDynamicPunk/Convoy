@@ -144,6 +144,44 @@ struct GeneralSettingsView: View {
 
 struct DownloadSettingsView: View {
     @EnvironmentObject var settings: AppSettings
+    var body: some View {
+        Form {
+            Section {
+                NumericSettingRow(
+                    title: "Concurrent downloads",
+                    detail: "How many downloads run at once. The rest wait in the queue.",
+                    value: $settings.maxConcurrentDownloads,
+                    range: 1...10
+                )
+
+                NumericSettingRow(
+                    title: "Segments per download",
+                    detail: "How many parts each file is split into. More can be faster.",
+                    value: $settings.defaultSegmentCount,
+                    range: 1...16
+                )
+            } header: {
+                Text("Download Settings")
+            } footer: {
+                Text("The limit applies immediately; segments apply to new downloads only.")
+            }
+
+            DownloadLocationSection()
+
+            // Follows the location directly: the original save-in-folders rules
+            // are subfolders of it.
+            SaveInFoldersSections()
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+}
+
+/// Where downloads are saved by default. The save-in-folders rules that
+/// follow it hang off this folder: the original ones are subfolders of it.
+private struct DownloadLocationSection: View {
+    @EnvironmentObject var settings: AppSettings
     /// Re-checked on appear and right after choosing a new folder — a plain
     /// computed property here would also re-run FileManager on every
     /// unrelated redraw (every keystroke in another field, etc.), which
@@ -157,58 +195,36 @@ struct DownloadSettingsView: View {
     @State private var folderExists = true
 
     var body: some View {
-        Form {
-            Section {
-                LabeledContent("Default folder") {
-                    HStack(spacing: 10) {
-                        if !folderExists {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                                .help("This folder can't be found")
-                        }
-                        Text(settings.downloadDirectory)
-                            .foregroundStyle(folderExists ? .secondary : Color.orange)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Button("Choose…") { selectDirectory() }
+        Section {
+            LabeledContent("Default folder") {
+                HStack(spacing: 10) {
+                    if !folderExists {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .help("This folder can't be found")
                     }
-                }
-            } header: {
-                Text("Download Location")
-            } footer: {
-                if folderExists {
-                    Text("Applies to new downloads only — downloads already in progress keep saving to the folder they started in.")
-                } else {
-                    Text("This folder can't be found — it may have been moved or deleted. Choose a new one; new downloads will otherwise pause and ask before saving here again.")
-                        .foregroundStyle(.orange)
+                    Text(settings.downloadDirectory)
+                        .foregroundStyle(folderExists ? .secondary : Color.orange)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Choose…") { selectDirectory() }
+                        // Not in the footer, which should say what the setting is.
+                        // This is the one catch worth knowing before changing it.
+                        .help("The original save-in-folders rules follow this folder. Rules you have changed keep the folder they were given.")
                 }
             }
-
-            Section {
-                NumericSettingRow(
-                    title: "Concurrent downloads",
-                    detail: "How many files can download at the same time.",
-                    value: $settings.maxConcurrentDownloads,
-                    range: 1...10
-                )
-
-                NumericSettingRow(
-                    title: "Segments per download",
-                    detail: "More segments can improve speed on suitable servers.",
-                    value: $settings.defaultSegmentCount,
-                    range: 1...16
-                )
-            } header: {
-                Text("Defaults")
-            } footer: {
-                Text("Segment count applies to new downloads only. The concurrent-download limit applies immediately, including to downloads already waiting.")
+            .onAppear { checkFolderExists() }
+            .onChange(of: settings.downloadDirectory) { checkFolderExists() }
+        } header: {
+            Text("Download Location")
+        } footer: {
+            if folderExists {
+                Text("Where new downloads are saved. Downloads already in progress keep their folder.")
+            } else {
+                Text("This folder can't be found. Choose another, or new downloads will pause and ask.")
+                    .foregroundStyle(.orange)
             }
         }
-        .formStyle(.grouped)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .onAppear { checkFolderExists() }
-        .onChange(of: settings.downloadDirectory) { checkFolderExists() }
     }
 
     private func checkFolderExists() {

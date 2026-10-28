@@ -18,6 +18,7 @@ private struct ContentHeightKey: PreferenceKey {
 }
 
 private enum FolderChoice: Hashable {
+    case automatic
     case folder(URL)
     case other
 }
@@ -44,6 +45,7 @@ private enum RecentDownloadFolders {
 
 struct AddDownloadsView: View {
     @EnvironmentObject var downloadManager: DownloadManager
+    @ObservedObject private var settings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
     
     @State private var inputText = ""
@@ -637,10 +639,73 @@ struct AddDownloadsView: View {
     /// The folder from Settings, which is where the download manager saves
     /// when nothing is chosen here.
     private var defaultFolder: URL {
-        URL(fileURLWithPath: AppSettings.shared.downloadDirectory, isDirectory: true)
+        URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
     }
+
+    /// Everything the current YouTube choice implies, worked out in ONE place
+    /// and read by both the "Automatic" folder preview and the real add. That
+    /// is the point of it: the preview names a folder from the filename, and
+    /// if its filename (or its idea of whether audio gets merged) ever
+    /// differed from what is actually added, it would promise a folder the
+    /// download then doesn't go to.
+    private struct YouTubeSelection {
+        let chosen: YouTubeFormatOption
+        /// A video-only pick needs an audio track added and muxed.
+        let needsMerge: Bool
+        let language: String?
+        let filename: String
+    }
+
+    /// Nil when nothing is known yet: still resolving, or a plain URL whose
+    /// real name only arrives with the probe.
+    private var youtubeSelection: YouTubeSelection? {
+        guard isSingleYouTubeURL,
+              let chosen = youtubeOptions.first(where: { $0.id == selectedFormatID })
+        else { return nil }
+        let title = youtubeTitle ?? "video"
+        // A video-only pick needs an audio track added and muxed. MediaMuxer
+        // does that through AVFoundation once yt-dlp has written both files
+        // (yt-dlp merged it itself, with ffmpeg, until the helper set was
+        // slimmed), and it writes MP4 — so the saved file must carry the .mp4
+        // extension in that case regardless of the video stream's own
+        // container. A combined or audio-only pick keeps its native
+        // extension, since nothing is merged.
+        let needsMerge = chosen.hasVideo && !chosen.hasAudio
+        let ext = needsMerge ? "mp4" : chosen.ext
+        let language = showsAudioLanguagePicker ? selectedAudioLanguage : nil
+        // A dub is named in the file, so two languages of one video don't
+        // come out as "Title (1080p)" and "… (1)".
+        let dub = audioTracks.first { $0.language == language && !$0.isOriginal }
+        let token = qualityToken(for: chosen) + (dub.map { ", \($0.name)" } ?? "")
+        return YouTubeSelection(
+            chosen: chosen,
+            needsMerge: needsMerge,
+            language: language,
+            filename: sanitizeFilename("\(title) (\(token)).\(ext)")
+        )
+    }
+
+    /// Where "Automatic" will file the download when the filename is already
+    /// known (YouTube after format resolution).
+    private var automaticPreviewFolder: URL? {
+        guard let filename = youtubeSelection?.filename else { return nil }
+        // The same call the real add makes, not a copy of its logic.
+        let route = downloadManager.categoryRoute(
+            filename: filename,
+            hosts: CategoryRouter.hosts(from: [validURLs.first]),
+            folderIsExplicit: false
+        )
+        return (route?.category.folder ?? defaultFolder).standardizedFileURL
+    }
+
+    private var automaticPickerTitle: String {
+        guard let folder = automaticPreviewFolder else { return "Automatic" }
+        let name = FileManager.default.displayName(atPath: folder.path)
+        return "Automatic (\(name))"
+    }
+
     private var resolvedDestination: URL {
-        (destination ?? defaultFolder).standardizedFileURL
+        (destination ?? automaticPreviewFolder ?? defaultFolder).standardizedFileURL
     }
     private var destinationPath: String {
         resolvedDestination.path(percentEncoded: false)
@@ -677,14 +742,30 @@ struct AddDownloadsView: View {
         }
     }
 
-    /// Safari's and the Screenshot tool's pattern: the usual folders, the
-    /// last few used, then Other… for anything else.
+    /// Safari's and the Screenshot tool's pattern: Automatic first, so
+    /// categories can route the file unless the person explicitly chooses a
+    /// folder, then the usual folders, the last few used, and Other….
+    /// "Automatic" is only offered while sorting is in effect; with it off
+    /// there is nothing to be automatic about, and it would just be a second
+    /// name for the default folder.
     private var folderPicker: some View {
         Picker("Save to", selection: Binding<FolderChoice>(
-            get: { .folder(resolvedDestination) },
+            get: {
+                if let destination {
+                    return .folder(destination.standardizedFileURL)
+                }
+                // Nothing chosen: "Automatic" while sorting is in effect,
+                // otherwise the default folder, exactly as before categories.
+                return downloadManager.sortingIsActive
+                    ? .automatic
+                    : .folder(defaultFolder.standardizedFileURL)
+            },
             set: { choice in
                 switch choice {
-                case .folder(let folder): destination = folder
+                case .automatic:
+                    destination = nil
+                case .folder(let folder):
+                    destination = folder
                 case .other:
                     // After the menu's fade-out: opened any sooner, the
                     // picker froze the half-faded menu on screen behind it.
@@ -695,6 +776,11 @@ struct AddDownloadsView: View {
                 }
             }
         )) {
+            if downloadManager.sortingIsActive {
+                Label(automaticPickerTitle, systemImage: "folder.badge.gearshape")
+                    .tag(FolderChoice.automatic)
+                Divider()
+            }
             ForEach(standardFolders, id: \.self) { folderRow($0) }
             let recent = recentFolderChoices
             if !recent.isEmpty {
@@ -906,26 +992,21 @@ struct AddDownloadsView: View {
         
         Task {
             do {
-                if isSingleYouTubeURL, let watchPageURL = validURLs.first, let chosen = youtubeOptions.first(where: { $0.id == selectedFormatID }) {
-                    let title = youtubeTitle ?? "video"
-                    // A video-only pick needs an audio track added and muxed.
-                    // MediaMuxer does that through AVFoundation once yt-dlp has
-                    // written both files (yt-dlp merged it itself, with ffmpeg,
-                    // until the helper set was slimmed), and it writes MP4 — so
-                    // the saved file must carry the .mp4 extension in that case
-                    // regardless of the video stream's own container. A combined
-                    // or audio-only pick keeps its native extension, since
-                    // nothing is merged.
-                    let needsMerge = chosen.hasVideo && !chosen.hasAudio
-                    let ext = needsMerge ? "mp4" : chosen.ext
-                    let language = showsAudioLanguagePicker ? selectedAudioLanguage : nil
-                    // A dub is named in the file, so two languages of one
-                    // video don't come out as "Title (1080p)" and "… (1)".
-                    let dub = audioTracks.first { $0.language == language && !$0.isOriginal }
-                    let token = qualityToken(for: chosen) + (dub.map { ", \($0.name)" } ?? "")
-                    let filename = sanitizeFilename("\(title) (\(token)).\(ext)")
+                if isSingleYouTubeURL, let watchPageURL = validURLs.first, let selection = youtubeSelection {
+                    // Worked out once, by the same code the folder preview
+                    // reads, so what is added here cannot differ from what the
+                    // preview promised. See YouTubeSelection for the rules
+                    // (the .mp4 extension on a merged pick, dub naming).
+                    let chosen = selection.chosen
+                    let needsMerge = selection.needsMerge
+                    let language = selection.language
+                    let filename = selection.filename
                     let dest = (destination ?? URL(fileURLWithPath: AppSettings.shared.downloadDirectory))
                         .appendingPathComponent(filename)
+                    // Only a folder the person picked counts as theirs. Falling back
+                    // to the default folder above is not a choice, so a download
+                    // category is still free to route this one.
+                    let folderIsExplicit = destination != nil
                     // yt-dlp performs the whole download — see YouTubeDownloader
                     // for why the byte-range engine can't fetch what YouTube
                     // currently serves.
@@ -945,12 +1026,14 @@ struct AddDownloadsView: View {
                             mergeAudio: needsMerge ? youtubeInfo?.mergeAudio(language: language) : nil,
                             videoBytes: chosen.filesizeBytes,
                             destination: dest,
-                            filenameSource: .extractorMetadata
+                            filenameSource: .extractorMetadata,
+                            folderIsExplicit: folderIsExplicit
                         )
                     }
                 } else {
                     for url in validURLs {
                         let dest = destination?.appendingPathComponent(url.lastPathComponent)
+                        let folderIsExplicit = destination != nil
                         // Per URL, so one duplicate in a pasted batch queues
                         // its question and the rest of the batch still gets
                         // added. Conflicts are presented one at a time.
@@ -959,7 +1042,8 @@ struct AddDownloadsView: View {
                                 url: url,
                                 destination: dest,
                                 filenameSource: .originalURL,
-                                segmentCount: segments
+                                segmentCount: segments,
+                                folderIsExplicit: folderIsExplicit
                             )
                         }
                     }
