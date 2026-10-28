@@ -1310,6 +1310,16 @@ async function interceptDownload(downloadItem, suggest) {
   // could never pass — Re-link silently failed every time regardless of
   // how good the candidate-matching logic was.
   const headers = downloadItem.fileSize > 0 ? { 'Content-Length': String(downloadItem.fileSize) } : undefined;
+  // Chrome's downloadItem.filename is the browser-suggested name, already
+  // incorporating the file's extension (e.g. "image.jpeg", "photo.png").
+  // For images and files whose URL path has no extension (e.g. Google's
+  // encrypted-tbn0.gstatic.com/images?q=... thumbnail URLs resolve to just
+  // "images" with no extension), the URL-path fallback in FilenameResolver
+  // produces an extensionless filename that macOS can't preview or open
+  // correctly. Forwarding the browser's own suggested name here ensures
+  // the extension is preserved whenever the URL alone doesn't carry one.
+  // Only passed when non-empty; IPCServer ignores an empty filename field.
+  const suggestedFilename = downloadItem.filename || undefined;
   chrome.downloads.cancel(downloadItem.id, () => {
     // Erase the cancelled entry from Chrome's download history, not just
     // cancel it. cancel() alone leaves an interrupted/USER_CANCELED record
@@ -1331,7 +1341,7 @@ async function interceptDownload(downloadItem, suggest) {
     // Content-Length itself is for IPCServer's Re-link size-matching only
     // (stripped before the outgoing GET) so injecting cookies/UA around it
     // is safe and doesn't corrupt the size check.
-    enrichRequest([url], referrer, undefined, undefined, headers, undefined,
+    enrichRequest([url], referrer, undefined, suggestedFilename, headers, undefined,
       downloadItem.incognito === true);
   });
 }

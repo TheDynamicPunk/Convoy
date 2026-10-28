@@ -164,4 +164,54 @@ public enum FilenameResolver {
         default: nil
         }
     }
+
+    /// Maps a MIME type to the most common file extension for that type.
+    ///
+    /// Used as a last-resort fallback when neither `Content-Disposition` nor
+    /// the resolved URL path carry an extension. Covers the image types most
+    /// commonly encountered in browser "Save Image As" flows (JPEG, PNG, WebP,
+    /// GIF, SVG, AVIF, BMP, TIFF), plus the handful of other content types
+    /// that frequently arrive through extensionless CDN paths. Returns `nil`
+    /// for types where guessing an extension would be misleading (e.g. generic
+    /// `application/octet-stream` could be anything).
+    public static func fileExtension(forMIMEType mimeType: String) -> String? {
+        // Only the bare type/subtype, no parameters (charset, boundary, etc.)
+        let bare = mimeType.split(separator: ";").first.map(String.init)?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? mimeType.lowercased()
+        switch bare {
+        // Images — the primary use case (Save Image As)
+        case "image/jpeg", "image/jpg":           return "jpg"
+        case "image/png":                          return "png"
+        case "image/webp":                         return "webp"
+        case "image/gif":                          return "gif"
+        case "image/svg+xml":                      return "svg"
+        case "image/avif":                         return "avif"
+        case "image/bmp":                          return "bmp"
+        case "image/tiff":                         return "tiff"
+        case "image/heic":                         return "heic"
+        case "image/heif":                         return "heif"
+        case "image/x-icon", "image/vnd.microsoft.icon": return "ico"
+        // Video
+        case "video/mp4":                          return "mp4"
+        case "video/webm":                         return "webm"
+        case "video/quicktime":                    return "mov"
+        case "video/x-matroska":                   return "mkv"
+        // Audio
+        case "audio/mpeg":                         return "mp3"
+        case "audio/ogg":                          return "ogg"
+        case "audio/wav", "audio/x-wav":           return "wav"
+        case "audio/aac":                          return "aac"
+        case "audio/flac":                         return "flac"
+        case "audio/mp4":                          return "m4a"
+        // Documents
+        case "application/pdf":                    return "pdf"
+        case "application/zip":                    return "zip"
+        case "application/x-tar":                  return "tar"
+        case "application/gzip":                   return "gz"
+        case "application/json":                   return "json"
+        // Generic / ambiguous — don't guess
+        case "application/octet-stream":           return nil
+        default:                                   return nil
+        }
+    }
 }

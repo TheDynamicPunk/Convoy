@@ -31,6 +31,13 @@ final class ProbeConnection: NSObject, URLSessionDataDelegate {
         /// A web page rather than a file (see `WebPageReply`).
         let isWebPage: Bool
         let refresh: String?
+        /// The MIME type from the Content-Type header (e.g. "image/jpeg"),
+        /// stripped of any parameters (charset, boundary, etc.). Used to infer
+        /// a file extension when the URL path and Content-Disposition both
+        /// lack one — the common case for images served through Google's image
+        /// proxy (encrypted-tbn0.gstatic.com/images?q=...) and similar CDNs
+        /// whose URL paths carry no extension at all.
+        let mimeType: String?
     }
 
     let url: URL
@@ -251,7 +258,10 @@ final class ProbeConnection: NSObject, URLSessionDataDelegate {
             statusCode: http.statusCode,
             isCompressed: isCompressed,
             isWebPage: WebPageReply.isPage(http),
-            refresh: http.value(forHTTPHeaderField: "Refresh")
+            refresh: http.value(forHTTPHeaderField: "Refresh"),
+            mimeType: http.value(forHTTPHeaderField: "Content-Type")
+                .map { $0.split(separator: ";").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? "" }
+                .flatMap { $0.isEmpty ? nil : $0.lowercased() }
         )
         
         headersDelivered = true

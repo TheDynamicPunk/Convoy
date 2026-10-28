@@ -1025,7 +1025,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // Update filename from Content-Disposition or resolved URL
         await updateDestinationFilenameIfNeeded(
             contentDisposition: metadata.contentDisposition,
-            resolvedURL: metadata.resolvedURL
+            resolvedURL: metadata.resolvedURL,
+            mimeType: metadata.mimeType
         )
         // If a duplicate-conflict sheet suspended this function, one of two
         // things happened on resume: a "don't proceed" answer (skip / keep
@@ -1489,7 +1490,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
     // 25+ seconds for some redirect chains; the streaming probe eliminates
     // that delay by downloading and probing in a single GET.
     
-    private func updateDestinationFilenameIfNeeded(contentDisposition: String?, resolvedURL: URL?) async {
+    private func updateDestinationFilenameIfNeeded(contentDisposition: String?, resolvedURL: URL?, mimeType: String? = nil) async {
         var candidate: (name: String, source: FilenameSource)?
 
         if let contentDisposition,
@@ -1511,6 +1512,36 @@ public final class DownloadTask: ObservableObject, Identifiable {
                 candidate = (safeName, .resolvedURL)
             }
         }
+
+        // MIME-type extension fallback: when neither Content-Disposition nor
+        // the resolved URL supplied an extension, infer one from Content-Type.
+        // This is the common case for images served through opaque CDN paths
+        // (e.g. Google's encrypted-tbn0.gstatic.com/images?q=… thumbnails,
+        // whose URL path is just "/images" with no extension). Without this,
+        // "Save Image As" via Convoy produces an extensionless file that macOS
+        // won't preview and apps may not recognise as an image.
+        //
+        // Only applied when the current destination filename already has no
+        // extension — avoids clobbering a correctly-named file whose extension
+        // happens to differ from what the server's Content-Type claims.
+        if destinationURL.pathExtension.isEmpty, let mime = mimeType {
+            if let ext = FilenameResolver.fileExtension(forMIMEType: mime) {
+                let currentStem = destinationURL.deletingPathExtension().lastPathComponent
+                let newName = "\(currentStem).\(ext)"
+                if let safeName = FilenameResolver.sanitize(newName) {
+                    // resolvedURL priority: above the URL-derived provisional
+                    // name, but below Content-Disposition (which names an
+                    // attachment explicitly). Using .resolvedURL source so
+                    // it can still be replaced by Content-Disposition if one
+                    // ever arrives on a redirect or retry.
+                    if candidate == nil,
+                       FilenameResolver.shouldReplace(current: filenameSource, with: .resolvedURL) {
+                        candidate = (safeName, .resolvedURL)
+                    }
+                }
+            }
+        }
+
         guard let candidate,
               FilenameResolver.shouldReplace(current: filenameSource, with: candidate.source)
         else { return }
