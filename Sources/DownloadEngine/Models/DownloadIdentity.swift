@@ -22,6 +22,12 @@ import Foundation
 ///   still catches the same quality with a different dubbed audio track: a
 ///   different selector, so the first arm lets it through, but the same
 ///   filename on disk.
+///
+/// One veto comes before both arms: **two files of known, different sizes are
+/// not the same download**, whatever their names or URLs. Like the format
+/// selector, it keeps different renditions of one title apart. It is evidence
+/// of difference only, so it never merges downloads that would otherwise be
+/// separate, and a missing size on either side says nothing.
 struct DownloadIdentity: Equatable {
     /// The task's source URL. For a YouTube task this is the watch page, which
     /// is why the selector below exists.
@@ -32,14 +38,22 @@ struct DownloadIdentity: Equatable {
     /// The yt-dlp format selector a YouTube request would download with
     /// (`"137,140"`), or nil for every other kind of download.
     let youTubeFormatSelector: String?
+    /// The whole file's size in bytes when exactly known, otherwise nil. Never
+    /// known for streams or YouTube, whose totals are estimates.
+    let size: Int64?
 
-    init(url: URL, name: String, youTubeFormatSelector: String? = nil) {
+    init(url: URL, name: String, youTubeFormatSelector: String? = nil, size: Int64? = nil) {
         self.url = url
         self.name = name
         self.youTubeFormatSelector = youTubeFormatSelector
+        // Zero or negative means "unknown", not "empty".
+        self.size = (size ?? 0) > 0 ? size : nil
     }
 
     func isSameDownload(as other: DownloadIdentity) -> Bool {
+        if let size = size, let otherSize = other.size, size != otherSize {
+            return false
+        }
         if url == other.url, youTubeFormatSelector == other.youTubeFormatSelector {
             return true
         }
@@ -52,6 +66,11 @@ extension DownloadTask {
     /// than the current destination's name on purpose: a task already renamed
     /// to "video (1).mp4" must still be recognised as the download it is.
     var identity: DownloadIdentity {
-        DownloadIdentity(url: url, name: originalName, youTubeFormatSelector: ytFormatSelector)
+        DownloadIdentity(
+            url: url, name: originalName, youTubeFormatSelector: ytFormatSelector,
+            // Stream and yt-dlp totals are estimates; only direct downloads
+            // have an exact size to compare.
+            size: (streamURL == nil && ytFormatSelector == nil) ? totalBytes : nil
+        )
     }
 }

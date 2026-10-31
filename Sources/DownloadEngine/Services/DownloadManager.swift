@@ -116,7 +116,11 @@ public final class DownloadManager: ObservableObject {
     /// skipConflictCheck suppresses the filename-match check — used internally
     /// for retry and conflict-resolution paths where the caller has already
     /// verified or cleared the conflict, so we don't loop back into the sheet.
-    public func addDownload(url: URL, destination: URL? = nil, filenameSource: FilenameSource? = nil, segmentCount: Int? = nil, customHeaders: [String: String] = [:], referrerURL: URL? = nil, folderIsExplicit: Bool = false, skipConflictCheck: Bool = false) async throws -> DownloadTask {
+    ///
+    /// expectedSize is the file's whole size in bytes, if the caller knows it.
+    /// It takes part in duplicate detection (see DownloadIdentity); nil means
+    /// unknown.
+    public func addDownload(url: URL, destination: URL? = nil, filenameSource: FilenameSource? = nil, segmentCount: Int? = nil, customHeaders: [String: String] = [:], referrerURL: URL? = nil, folderIsExplicit: Bool = false, skipConflictCheck: Bool = false, expectedSize: Int64? = nil) async throws -> DownloadTask {
         let source = filenameSource ?? (destination == nil ? .originalURL : .userProvided)
         var dest = normalizedDestination(destination, fallbackURL: url)
         // Captured before any deduplication touches dest — this, not
@@ -131,7 +135,7 @@ public final class DownloadManager: ObservableObject {
         // original name — show the resolution sheet instead of silently
         // proceeding. skipConflictCheck lets internal callers (retry,
         // resolveConflict) bypass this.
-        if !skipConflictCheck, let existing = existingTask(matchingURL: url, originalName: originalName) {
+        if !skipConflictCheck, let existing = existingTask(matchingURL: url, originalName: originalName, size: expectedSize) {
             // Based on the EXISTING task's own name, not the incoming
             // request's — the incoming side may have resolved a worse name
             // for this particular request (e.g. a title-attribution miss on
@@ -848,6 +852,11 @@ public final class DownloadManager: ObservableObject {
     /// their behalf; the cost is an occasional dialog for two unrelated
     /// downloads that happen to share a generic fallback title.
     ///
+    /// The exception is a known size: two files of known, different sizes are
+    /// different downloads (see DownloadIdentity). That is evidence of
+    /// difference, not a similarity heuristic; with no size, the rule above
+    /// applies unchanged.
+    ///
     /// `excluding` skips a given task's own id — needed by
     /// resolveLateIdentity, which calls this on a task that's already in
     /// `tasks` and must not match against itself.
@@ -861,9 +870,9 @@ public final class DownloadManager: ObservableObject {
     ///   YouTube requests are the same download only when they would produce
     ///   the same bytes, which is page URL *and* selector. `nil == nil` for
     ///   every other kind of download, so nothing else changes behaviour.
-    private func existingTask(matchingURL url: URL, originalName: String, youTubeFormatSelector: String? = nil, excluding excludedTaskID: UUID? = nil) -> DownloadTask? {
+    private func existingTask(matchingURL url: URL, originalName: String, youTubeFormatSelector: String? = nil, size: Int64? = nil, excluding excludedTaskID: UUID? = nil) -> DownloadTask? {
         let incoming = DownloadIdentity(
-            url: url, name: originalName, youTubeFormatSelector: youTubeFormatSelector
+            url: url, name: originalName, youTubeFormatSelector: youTubeFormatSelector, size: size
         )
         return (tasks + completedTasks).first { task in
             guard task.id != excludedTaskID else { return false }
@@ -1054,6 +1063,7 @@ public final class DownloadManager: ObservableObject {
         guard let existing = existingTask(
             matchingURL: task.url,
             originalName: resolvedName,
+            size: task.identity.size,
             excluding: task.id
         ) else {
             return .noConflict

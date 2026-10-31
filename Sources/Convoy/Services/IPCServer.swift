@@ -275,6 +275,9 @@ final class IPCServer {
                     } else {
                         let filename = providedFilename ?? (throttledURL.lastPathComponent.isEmpty ? (throttledURL.host ?? throttledURL.absoluteString) : throttledURL.lastPathComponent)
                         FlyingCaptureAnimation.shared.play(filename: filename)
+                        // File size measured by the extension, if any. Read before
+                        // mergedHeaders drops it; used for duplicate detection.
+                        let expectedSize: Int64? = (rawHeaders["Content-Length"] ?? rawHeaders["content-length"]).flatMap { Int64($0) }
                         Task {
                             let relinked = await DownloadManager.shared.matchFreshURL(throttledURL, headers: rawHeaders)
                             if !relinked {
@@ -291,7 +294,8 @@ final class IPCServer {
                                     // sending one, it must be a page-resolved
                                     // media title or this is the wrong source.
                                     filenameSource: destURL == nil ? nil : .mediaTitle,
-                                    segmentCount: explicitSegments, customHeaders: mergedHeaders, referrerURL: referrerURL
+                                    segmentCount: explicitSegments, customHeaders: mergedHeaders, referrerURL: referrerURL,
+                                    expectedSize: expectedSize
                                 )
                             }
                         }

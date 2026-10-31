@@ -1230,7 +1230,9 @@
   // Used to append the correct extension to a human-readable title filename
   // for direct (non-stream) downloads — the title has no extension, but the
   // CDN URL often does (e.g. /DASH_360.mp4, /video.webm, /clip.mov).
-  const MEDIA_EXTS = /\.(mp4|m4v|webm|mov|avi|mkv|flv|wmv|ogg|ogv|mp3|m4a|aac|opus|wav|flac)(\?|#|$)/i;
+  // One optional trailing slash may follow the extension (".../clip.mp4/").
+  // It must end the path: a slash anywhere else means ".mp4" is a folder name.
+  const MEDIA_EXTS = /\.(mp4|m4v|webm|mov|avi|mkv|flv|wmv|ogg|ogv|mp3|m4a|aac|opus|wav|flac)\/?(\?|#|$)/i;
   function extFromUrl(url) {
     if (!url || typeof url !== 'string') return null;
     try {
@@ -1296,7 +1298,7 @@
 
   function iconFor(url) {
     if (!url || typeof url !== 'string') return '🚫';
-    const ext = (url.split('.').pop() || '').split('?')[0].toLowerCase();
+    const ext = (url.split('.').pop() || '').split(/[?#/]/)[0].toLowerCase();
     if (/^(mp4|mkv|webm|mov|avi|m3u8|mpd|ts)$/.test(ext)) return '🎬';
     if (/^(mp3|wav|flac|aac|m4a|ogg)$/.test(ext)) return '🎵';
     return '📄';

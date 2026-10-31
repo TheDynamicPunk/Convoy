@@ -911,12 +911,96 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // http_headers) are passed as extraHeaders and merged on top — they
   // provide UA/Accept/Sec-Fetch but never cookies, so skipping
   // enrichRequest was the root cause of the 403→EXPIRED loop.
-  enrichRequest(urls, ref, segmentCount, filename, explicitHeaders,
-    { streamType, representationId, bandwidth, audioTracks },
-    sender?.tab?.incognito === true);
+  // Plain-file captures from the video latch are resolved in the browser first
+  // (see resolveRedirectInBrowser). Streams and other sources are left alone.
+  const resolveFirst = message.source === 'video-latch' && !streamType;
+  (async () => {
+    try {
+      let finalUrls = urls;
+      let headersToSend = explicitHeaders;
+      if (resolveFirst) {
+        const resolved = await Promise.all(urls.map((u) => resolveRedirectInBrowser(u)));
+        finalUrls = resolved.map((r) => r.url);
+        // The measured size is sent as Content-Length, as for intercepted
+        // downloads. The app uses it for duplicate detection and re-link
+        // matching, and strips it before making any request.
+        if (resolved.length === 1 && resolved[0].size) {
+          headersToSend = { ...(explicitHeaders || {}), 'Content-Length': String(resolved[0].size) };
+        }
+      }
+      await enrichRequest(finalUrls, ref, segmentCount, filename, headersToSend,
+        { streamType, representationId, bandwidth, audioTracks },
+        sender?.tab?.incognito === true);
+    } catch (e) {
+      console.error('[MDL] download request failed:', e);
+    }
+  })();
   
-  return false; // synchronous, enrichment happens via callbacks/promises
+  return false; // no reply is sent; the async work above reports via the native host
 });
+
+// Follows a media URL's redirects in the browser and returns where it lands.
+//
+// Some servers issue links bound to the client address that requested them.
+// The app's own connection may use a different address family than the
+// browser's, in which case the same link is refused. Resolving the redirect
+// over the browser's connection and passing on the final URL avoids that.
+//
+// Best effort: on any failure, a non-media response or an unchanged URL, the
+// original URL is returned. Returns { url, size }, where size is the whole
+// file's byte count if the response states it, otherwise null.
+async function resolveRedirectInBrowser(url) {
+  let timer;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return { url, size: null };
+    // YouTube / googlevideo links are resolved by yt-dlp, never here.
+    const host = parsed.hostname.toLowerCase();
+    if (host.endsWith('googlevideo.com') || host.endsWith('youtube.com')) return { url, size: null };
+
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), 8000);
+    // One byte is enough to learn where the redirect chain ends.
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Range: 'bytes=0-0' },
+      credentials: 'include',
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    const finalUrl = response.url;
+    const type = (response.headers.get('content-type') || '').toLowerCase();
+    const usable = (response.status === 200 || response.status === 206)
+      && !type.startsWith('text/html');
+    const size = usable ? totalSizeFromResponse(response) : null;
+    controller.abort(); // do not keep the body streaming
+    if (usable && finalUrl && finalUrl !== url) return { url: finalUrl, size };
+    return { url, size };
+  } catch (e) {
+    return { url, size: null };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Whole-file size from the one-byte response: the total in a 206's
+// Content-Range ("bytes 0-0/N"), or Content-Length on a 200 (Range ignored).
+// Null when not stated plainly, including for a content-encoded body.
+function totalSizeFromResponse(response) {
+  const range = response.headers.get('content-range') || '';
+  const slash = range.lastIndexOf('/');
+  if (slash !== -1) {
+    const total = parseInt(range.slice(slash + 1), 10);
+    if (Number.isFinite(total) && total > 0) return total;
+  }
+  if (response.status === 200) {
+    const encoding = (response.headers.get('content-encoding') || '').toLowerCase();
+    const length = parseInt(response.headers.get('content-length') || '', 10);
+    if ((!encoding || encoding === 'identity') && Number.isFinite(length) && length > 0) return length;
+  }
+  return null;
+}
 
 // The title of the tab a content script runs in, for a frame that has none
 // of its own (an embedded player) and can't read its cross-origin parent.
