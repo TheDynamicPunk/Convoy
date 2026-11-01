@@ -28,6 +28,22 @@ final class SettingsWindowTracker {
         }
     }
 
+    /// Opens the Settings window, creating it if it isn't open yet, and
+    /// brings it to the front.
+    ///
+    /// Goes through the App menu's Settings item because that is the only
+    /// stable public way into the scene's own handler from AppKit code. The
+    /// menu still exists while the Dock icon is hidden; only its bar isn't
+    /// shown. Every caller outside SwiftUI (today only the
+    /// convoy://settings URL) comes through here.
+    func open() {
+        if let settingsItem = NSApp.mainMenu?.items.first?.submenu?.items.first(where: { $0.keyEquivalent == "," }),
+           let action = settingsItem.action {
+            NSApp.sendAction(action, to: settingsItem.target, from: settingsItem)
+        }
+        bringToFront()
+    }
+
     /// Orders the Settings window to the front and gives it key focus.
     /// Re-asserts at +0.1 s and +0.25 s to beat focus-hand-off races from the browser.
     func bringToFront() {
@@ -37,8 +53,8 @@ final class SettingsWindowTracker {
     }
 
     private func activateAndOrder() {
-        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
-        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        AppActivation.activate()
 
         let target = settingsWindow ?? NSApp.windows.first {
             $0.identifier?.rawValue == "com_apple_SwiftUI_Settings_window" || $0.title.contains("Settings")

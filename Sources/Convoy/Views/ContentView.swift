@@ -418,16 +418,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .concurrencyLimitReached)) { _ in
             showToast("Limit reached (\(downloadManager.maxConcurrentDownloads) at a time) — raise it in Settings → Downloads.")
         }
-        // A filename conflict just became the one shown in the sheet above
-        // — it's stuck waiting on a decision and, unlike a silent capture,
-        // can sit unseen behind other windows indefinitely if nothing
-        // brings the app forward for it. Gated by alwaysFocusForRequiredInput
-        // specifically, not bringWindowToFrontOnCapture — see AppSettings.
-        .onReceive(NotificationCenter.default.publisher(for: .downloadConflictNeedsAttention)) { _ in
-            if AppSettings.shared.alwaysFocusForRequiredInput {
-                MainWindowTracker.shared.showMainWindow()
-            }
-        }
         .overlay(alignment: .bottomTrailing) {
             BottomBannerStack(toastMessage: toastMessage, onDismissToast: dismissToast)
                 .padding(.bottom, 16)

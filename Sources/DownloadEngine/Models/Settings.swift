@@ -14,7 +14,6 @@ public final class AppSettings: ObservableObject {
         case speedLimit
         case autoStartDownloads
         case bringWindowToFrontOnCapture
-        case alwaysFocusForRequiredInput
         case showNotifications
         case playCompletionSound
         case temporaryFilesNoticeThresholdGB
@@ -26,6 +25,7 @@ public final class AppSettings: ObservableObject {
         case keepHelpersUpToDate
         case downloadCategoriesEnabled
         case downloadCategories
+        case hideDockIcon
     }
     
     @AppStorage(Key.downloadDirectory.rawValue) public var downloadDirectory: String = ""
@@ -44,19 +44,10 @@ public final class AppSettings: ObservableObject {
     /// and the new row appearing) for anyone who finds window-stealing
     /// disruptive, e.g. while working in another app.
     @AppStorage(Key.bringWindowToFrontOnCapture.rawValue) public var bringWindowToFrontOnCapture: Bool = true
-    /// Separate, higher-priority layer on top of the setting above: when a
-    /// captured download actually needs a decision from a person — the
-    /// YouTube quality/format picker, or a filename-conflict sheet — bring
-    /// the window forward regardless of bringWindowToFrontOnCapture, since a
-    /// silent capture and a dialog stuck waiting on human input aren't the
-    /// same kind of interruption: one can sit in the background fine, the
-    /// other can't be resolved at all until someone sees it. On by default,
-    /// and meant to stay that way for most people — this exists as an
-    /// escape hatch (e.g. someone running unattended/scripted capture who
-    /// really does want every dialog silent), not a everyday toggle.
-    @AppStorage(Key.alwaysFocusForRequiredInput.rawValue) public var alwaysFocusForRequiredInput: Bool = true
     @AppStorage(Key.showNotifications.rawValue) public var showNotifications: Bool = true
     @AppStorage(Key.playCompletionSound.rawValue) public var playCompletionSound: Bool = true
+    /// When on, Convoy lives only in the menu bar — no Dock icon and not shown in the ⌘+Tab app switcher.
+    @AppStorage(Key.hideDockIcon.rawValue) public var hideDockIcon: Bool = false
     /// How much has to pile up before the main window mentions it.
     @AppStorage(Key.temporaryFilesNoticeThresholdGB.rawValue) public var temporaryFilesNoticeThresholdGB: Double =
         TemporaryStorageNotice.defaultThresholdGB

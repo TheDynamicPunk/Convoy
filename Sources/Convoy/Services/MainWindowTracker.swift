@@ -43,6 +43,10 @@ final class MainWindowTracker {
         }
         
         mainWindow = window
+        // A new window is one of the moments the Dock icon has come back after
+        // being hidden. The correction re-activates the app, so this window
+        // stays in front.
+        DockIconPolicy.restoreIfDrifted()
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
@@ -61,19 +65,31 @@ final class MainWindowTracker {
         }
     }
     
-    /// The single, shared implementation of "bring the main window to the
-    /// front, creating it fresh if it doesn't exist yet." Every reopen
-    /// trigger (menu bar button, Dock icon, `open Convoy.app`, future
-    /// ones) should call this and nothing else — it used to be written out
-    /// separately in StatusItemManager.openMainWindow() and
+    /// The single entry point for "bring the main window to the front,
+    /// creating it fresh if it doesn't exist yet." Every trigger (a capture,
+    /// a prompt that needs an answer, the menu bar button, a reopen from the
+    /// Dock, Finder or Spotlight, future ones) calls this and nothing else.
+    /// It used to be written out separately in
+    /// StatusItemManager.openMainWindow() and
     /// AppDelegate.applicationShouldHandleReopen(), which is exactly how a
     /// real bug happened: the two copies drifted out of sync (one called
     /// NSApp.activate, the other forgot to), so the Dock/menu-bar paths
     /// behaved inconsistently for a background-but-not-minimized window.
-    /// One implementation, both callers delegate to it, can't drift again.
+    /// One implementation, every caller delegates to it, can't drift again.
+    ///
+    /// With "Hide Dock icon" on, the app is lifted to a regular one first (see
+    /// `DockIconPolicy.showElevatedIfHidden`): an accessory app can't leave a
+    /// full-screen browser's Space or take key focus, so none of the triggers
+    /// above could work without it. With the icon shown, or already lifted,
+    /// this goes straight to `presentMainWindow()`.
     func showMainWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        
+        DockIconPolicy.showElevatedIfHidden { [self] in presentMainWindow() }
+    }
+
+    /// Orders the window front (deminiaturizing it, or opening a fresh one if
+    /// it is gone) and activates the app. Private so nothing can reach it
+    /// without going through `showMainWindow()`'s policy handling.
+    private func presentMainWindow() {
         if let existing = mainWindow {
             // Checked separately from isVisible: a minimized window still
             // exists as a real object (isVisible is false for a
@@ -84,12 +100,30 @@ final class MainWindowTracker {
             if existing.isMiniaturized {
                 existing.deminiaturize(nil)
             }
+            // Order the window front before activating: the window must
+            // already be positioned at the top before we raise the app,
+            // otherwise macOS may bring forward a different window.
+            existing.orderFrontRegardless()
             existing.makeKeyAndOrderFront(nil)
         } else if let url = URL(string: "convoy://open") {
             // No live window at all — genuinely closed. .handlesExternalEvents
             // (matching: ["*"]) on the WindowGroup turns this URL open into a
             // fresh window.
-            NSWorkspace.shared.open(url)
+            // Checked once the system has finished the open, because this
+            // reopen path is where the Dock icon has come back. The window
+            // and activation checks can both run before the open lands.
+            NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, _ in
+                Task { @MainActor in
+                    DockIconPolicy.restoreIfDrifted()
+                }
+            }
         }
+        // Activate after the window is ordered front.
+        //
+        // activate(from:) rather than the bare NSApp.activate(): it names the
+        // currently-frontmost app as the sender, which is who the person was
+        // just using (the browser that triggered the capture). See
+        // AppActivation for what has and hasn't been verified about it.
+        AppActivation.activate(from: NSWorkspace.shared.frontmostApplication)
     }
 }

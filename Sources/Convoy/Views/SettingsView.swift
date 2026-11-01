@@ -45,6 +45,9 @@ struct SettingsView: View {
         .onAppear {
             SettingsWindowTracker.shared.bringToFront()
         }
+        .onChange(of: settings.hideDockIcon) { _, hide in
+            DockIconPolicy.settingChanged(hidden: hide)
+        }
     }
 }
 
@@ -99,6 +102,19 @@ struct GeneralSettingsView: View {
             }
 
             Section {
+                Toggle("Hide Dock icon", isOn: $settings.hideDockIcon)
+            } header: {
+                Text("Menu Bar")
+            } footer: {
+                Text("When on, Convoy lives only in the menu bar — no Dock icon and not shown in the ⌘+Tab app switcher. The icon shows while Convoy's window is open.")
+            }
+
+            Section("Downloads") {
+                Toggle("Start downloads automatically", isOn: $settings.autoStartDownloads)
+                Toggle("Bring Convoy to the front when a download is captured", isOn: $settings.bringWindowToFrontOnCapture)
+            }
+
+            Section {
                 Toggle("Download notifications", isOn: $settings.showNotifications)
                 Toggle("Completion sound", isOn: $settings.playCompletionSound)
                     .disabled(!settings.showNotifications)
@@ -106,12 +122,6 @@ struct GeneralSettingsView: View {
                 Text("Notifications")
             } footer: {
                 Text("Plays whatever sound and respects whatever Focus settings you've chosen for notifications on your Mac.")
-            }
-
-            Section("Downloads") {
-                Toggle("Start downloads automatically", isOn: $settings.autoStartDownloads)
-                Toggle("Bring Convoy to the front when a download is captured", isOn: $settings.bringWindowToFrontOnCapture)
-                Toggle("Focus Convoy for dialogs that need your input", isOn: $settings.alwaysFocusForRequiredInput)
             }
 
             Section {

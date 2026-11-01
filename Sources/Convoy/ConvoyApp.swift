@@ -9,10 +9,20 @@ import os
 let appLogger = Logger(subsystem: "Convoy", category: "AppLaunch")
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Held for the life of the app; see its use in applicationDidFinishLaunching.
+    private var conflictObserver: NSObjectProtocol?
+
     /// A second running copy switches to the one that owns the download list
     /// and quits, before any window or menu bar item exists.
     func applicationWillFinishLaunching(_ notification: Notification) {
-        guard !DownloadManager.shared.ownsDownloadList else { return }
+        // The owning copy applies the stored Dock icon preference here,
+        // before any window exists. A second copy leaves its policy alone, so
+        // the hand-off below behaves exactly as it did before this setting
+        // existed.
+        guard !DownloadManager.shared.ownsDownloadList else {
+            DockIconPolicy.applyStored()
+            return
+        }
         appLogger.notice("another copy owns the download list; switching to it and quitting")
         let owner = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
             .first { $0 != .current }
@@ -32,6 +42,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // did nothing for Finder/Spotlight/Get Info — partial coverage of a
         // problem that shouldn't exist if the bundle is assembled correctly.
         StatusItemManager.shared.setup()
+        // A filename conflict leaves a download blocked until someone answers
+        // the sheet, so it always brings the app forward, with no setting for
+        // it. Observed here rather than in ContentView because ContentView
+        // only exists while the window is open, and in a menu bar app it
+        // usually isn't: the notification would be lost and the download
+        // would sit blocked with nothing on screen. Opening the window
+        // brings ContentView up, and it shows the sheet from
+        // DownloadManager.pendingConflict.
+        conflictObserver = NotificationCenter.default.addObserver(
+            forName: .downloadConflictNeedsAttention,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                MainWindowTracker.shared.showMainWindow()
+            }
+        }
         DownloadCompletionAlertService.shared.start()
         BrowserSetupModel.shared.launch()
         _ = AppUpdater.shared
@@ -39,6 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // newer ones listed than are installed. Returns immediately unless
         // this launch is the one after such an update.
         HelperAutoUpdate.shared.runAtLaunch()
+    }
+    
+    /// A safety net for the Hide Dock icon setting: if anything outside the
+    /// app has switched it back to a regular app (the icon reappears and
+    /// stays), this hides it again the next time Convoy comes forward.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        DockIconPolicy.restoreIfDrifted()
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -50,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // window creation for the WindowGroup — without it, a Dock click on
         // a closed window created a second, duplicate window alongside the
         // one showMainWindow() opens via the convoy:// URL.
+        // Also fires when the running app is opened again from Finder,
+        // Spotlight or Launchpad, not only on a Dock click, and with the Dock
+        // icon hidden those are the only ways it arrives.
         MainWindowTracker.shared.showMainWindow()
         return false
     }
@@ -155,35 +192,29 @@ struct ConvoyApp: App {
                         PendingOpenIntent.shared.store(youtubeURL: downloadURL)
                         NotificationCenter.default.post(name: .openYouTubeDownload, object: nil, userInfo: ["url": downloadURL])
                         // This IS a capture that needs a decision (pick a
-                        // quality/format before anything downloads) — gated by
-                        // alwaysFocusForRequiredInput, not bringWindowToFrontOnCapture:
-                        // that setting is for silent captures with nothing to
-                        // decide, this one blocks until someone picks a format.
-                        // showMainWindow() rather than a bare NSApp.activate: the
-                        // shared, already-correct implementation (deminiaturizes,
-                        // creates the window fresh if none exists) instead of
-                        // assuming a window is already there to activate.
-                        if settings.alwaysFocusForRequiredInput {
-                            MainWindowTracker.shared.showMainWindow()
-                        }
+                        // quality/format before anything downloads), so it always
+                        // brings the window forward: the person just clicked the
+                        // button for it and nothing happens until they answer.
+                        // Unlike a silent capture it is not governed by
+                        // bringWindowToFrontOnCapture, and there is no setting for it.
+                        MainWindowTracker.shared.showMainWindow()
                     } else if url.host == "settings",
                               url.pathComponents.dropFirst().first == "browser" {
                         // convoy://settings/browser — deep-links to the Browser settings tab.
                         // Sent by the extension popup when the native host isn’t registered.
                         appLogger.info("onOpenURL: opening settings/browser")
                         UserDefaults.standard.set("browser", forKey: "settingsSelectedSection")
-                        NSApp.activate(ignoringOtherApps: true)
                         PendingOpenIntent.shared.storeOpenBrowserSettings()
-                        NotificationCenter.default.post(name: .openBrowserSettings, object: nil)
-                        // Trigger SwiftUI’s Settings scene via its App-menu item —
-                        // the only stable public entry point into the scene’s internal handler.
-                        if let settingsItem = NSApp.mainMenu?.items.first?.submenu?.items.first(where: { $0.keyEquivalent == "," }),
-                           let action = settingsItem.action {
-                            NSApp.sendAction(action, to: settingsItem.target, from: settingsItem)
+                        // Lifted like every other path that opens a window from
+                        // another app: with the Dock icon hidden, Settings could
+                        // not leave a full-screen browser's Space otherwise.
+                        DockIconPolicy.showElevatedIfHidden {
+                            AppActivation.activate()
+                            NotificationCenter.default.post(name: .openBrowserSettings, object: nil)
+                            SettingsWindowTracker.shared.open()
                         }
-                        SettingsWindowTracker.shared.bringToFront()
                     } else {
-                        NSApp.activate(ignoringOtherApps: true)
+                        AppActivation.activate()
                         appLogger.info("onOpenURL: not an add-with-url request, activating only")
                     }
                 }

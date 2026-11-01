@@ -45,8 +45,8 @@ public final class DownloadManager: ObservableObject {
     /// DownloadEngine has no AppKit dependency to bring a window forward
     /// itself, so this is the same notification-based hand-off
     /// .concurrencyLimitReached already uses to reach the app layer;
-    /// Convoy's ContentView is what actually calls
-    /// MainWindowTracker, gated by AppSettings.alwaysFocusForRequiredInput.
+    /// Convoy's AppDelegate observes it and calls MainWindowTracker, always:
+    /// there is no setting for it, and it works with no window open.
     @Published public private(set) var pendingConflict: DuplicateDownloadConflict? {
         didSet {
             guard let pendingConflict, pendingConflict.id != oldValue?.id else { return }
@@ -1724,7 +1724,6 @@ public extension Notification.Name {
     static let concurrencyLimitReached = Notification.Name("concurrencyLimitReached")
     /// Posted whenever pendingConflict becomes a new (different) conflict —
     /// see its doc comment above. The app layer uses this to bring the
-    /// window forward for the duplicate-conflict sheet, gated by
-    /// AppSettings.alwaysFocusForRequiredInput.
+    /// window forward for the duplicate-conflict sheet, unconditionally.
     static let downloadConflictNeedsAttention = Notification.Name("downloadConflictNeedsAttention")
 }
