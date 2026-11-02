@@ -1,7 +1,8 @@
 # Releasing Convoy
 
 A release has two halves. The first is scripted and entirely local. The second
-puts things on the internet and is **not scripted yet**.
+puts things on the internet: three scripted commands with one manual step (the
+GitHub release, made in the browser) in the middle.
 
 ## 1. Prepare (scripted, local, safe to repeat)
 
@@ -102,25 +103,46 @@ If signing fails part way (a network error, a lint error), check whether
 Mozilla used the version up before retrying. If it did, bump to the next
 number, as happened with 1.0.1.
 
-## 2. Publish (by hand for now)
+## 2. Publish
 
-Order matters. The appcast is what makes installed copies update, so it goes
-**last**: an appcast that points at a missing file breaks every update check.
+Run these in order, one at a time. Don't commit anything between the prepare
+half and the end of this one: the tag must still point at what was built (`push`
+refuses if it doesn't).
 
-1. Push `main` and the tag.
-2. Create the GitHub release with `Convoy-X.dmg`, `.dmg.sha256`, `Convoy-X.pkg`,
-   `.pkg.sha256`, `Convoy-X.zip`, plus the new `convoy-<ext version>.xpi` if the
-   extension was signed this time.
-3. Download the uploaded files and compare their SHA-256 with the local ones.
-4. Pages repo: copy in `.build/ship-pages/convoy/appcast.xml`; add the extension
-   to `convoy/firefox-updates.json` if it was signed this time; update
-   `convoy/latest.json` (what the website's download buttons read). Commit and
-   push the Pages repo only now, and only those files: anything else half-edited
-   in that clone would go live too.
-5. Fetch the live appcast and check it shows the new version.
+| # | Command | What it does |
+|---|---------|--------------|
+| 6 | `./ship.sh vX.Y.Z push` | Re-verifies the built files, asks, then pushes `main` and the tag. Writes a draft of the release notes (commit subjects plus checksums) to `.build/dist/release-notes.md` and prints the link and the exact files to attach. |
+| | **You, in the browser** | Create the release for the tag: title `Convoy X.Y.Z`, notes from the draft, attach exactly the listed files (do not rebuild them), publish as a normal release (not a draft, not a pre-release). |
+| 7 | `./ship.sh vX.Y.Z pages` | Refuses unless the tag is on origin and every file on the release is byte for byte the one that was built. Then writes the appcast, `convoy/latest.json` (what the website's download buttons read) and, when the extension is new, its entry in `convoy/firefox-updates.json`; shows what it will commit and what it leaves alone; asks; commits and pushes the Pages repo. **This is the moment installed copies learn about the update.** |
+| 8 | `./ship.sh vX.Y.Z live` | Waits for GitHub Pages (up to 3 minutes per file) and checks the live appcast, `latest.json` and update list are exactly what was pushed. |
 
-This is the next piece to script. It will be the same shape as `ship.sh`: small
-steps, each checking its own precondition, with the appcast last.
+A release is **5 files**, or **6** when the extension is new: `Convoy-X.dmg`,
+`.dmg.sha256`, `Convoy-X.pkg`, `.pkg.sha256`, `Convoy-X.zip` (the one Sparkle
+downloads), and the signed `convoy-<extension version>.xpi` (used only for
+Firefox auto-updates). `push` prints the list; nobody counts.
+
+Other things in the Pages clone are never swept in: only the three generated
+files are committed. If the website's wording changes with this release, edit
+`index.html` in the Pages clone first and run `pages` as
+`CONVOY_PAGES_EXTRA=index.html ./ship.sh vX.Y.Z pages`, so it goes live in the
+same push. The fallback text in `index.html` (shown with JavaScript off) is still
+edited by hand.
+
+Order matters because the appcast is what makes installed copies update, so it
+goes **last**: an appcast pointing at a missing file breaks every update check.
+
+**After `live`:** keep an older install (1.1.0) around and use Convoy > Check for
+Updates on it. No script can watch a real copy update itself.
+
+### If something stops
+
+Every step is safe to rerun.
+- `push` or `pages` refuses: read the message; nothing public has changed.
+- `pages` pushed but `live` fails: the files are pushed and Pages is probably
+  still publishing; rerun `live` in a minute.
+- Wrong file on the release: delete it there, attach the one `pages` names, rerun
+  `pages`.
+- To abandon before `push`: `git tag -d vX.Y.Z`.
 
 ## Not automated, on purpose
 

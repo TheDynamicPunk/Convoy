@@ -2,17 +2,20 @@
 #
 # ship.sh -- prepare a Convoy release.
 #
-# Everything here is local: nothing is pushed, uploaded or published. The one
-# exception is signing the Firefox extension on AMO, which cannot be undone, so
-# it asks first. Publishing is a separate step, deliberately not in this file.
+# The default run is entirely local: nothing is pushed, uploaded or published.
+# (The one exception is signing the Firefox extension on AMO, which cannot be
+# undone, so it asks first.) Going public is three more commands, run one at a
+# time, at the bottom of this file.
 #
-#   ./ship.sh v1.2.0             run every step in order; stop at the first failure
+#   ./ship.sh v1.2.0             prepare: checks, extension, tag, build, verify
 #   ./ship.sh v1.2.0 verify      run one step on its own
+#   ./ship.sh v1.2.0 push        then: push, (release in the browser), pages, live
 #
 # Steps: checks  extension  tag  build  verify
 #
 # Environment:
 #   CONVOY_PAGES_DIR   clone of thedynamicpunk.github.io (default: next to this repo)
+#   CONVOY_PAGES_EXTRA extra files in that clone to commit with the release, e.g. index.html
 #   SKIP_TESTS=1       skip `swift test`
 #   AMO_JWT_ISSUER, AMO_JWT_SECRET   only when the extension needs signing
 #
@@ -230,13 +233,194 @@ step_verify() {
     ok "appcast item: right file, length, build $build, signature verifies"
 }
 
+# ===========================================================================
+# PUBLISH. Not part of the default run: each is its own command, in this order.
+#
+#   ./ship.sh v1.2.0 push     push main and the tag
+#   (you, in the browser)     create the GitHub release and attach the files
+#   ./ship.sh v1.2.0 pages    appcast, latest.json, extension list -> Pages repo
+#   ./ship.sh v1.2.0 live     check what users will fetch
+#
+# The appcast is what makes installed copies update, so it goes out last: an
+# appcast that points at a missing file breaks every update check.
+# ===========================================================================
+
+repo() { git config --get remote.origin.url | sed -E 's#^.*github\.com[:/]##; s#\.git$##'; }
+
+# The files that belong on the GitHub release. The signed extension is included
+# only when this release is the one that introduces it.
+release_files() {
+    local f ext link
+    for f in dmg dmg.sha256 pkg pkg.sha256 zip; do echo "$DIST/Convoy-$VERSION.$f"; done
+    ext="$(plutil -extract version raw -o - Extensions/Chromium/manifest.json)"
+    link="$(grep -A1 "\"version\": \"$ext\"" "$PAGES/convoy/firefox-updates.json" | grep update_link || true)"
+    if [ -z "$link" ] || [[ "$link" == *"/$TAG/"* ]]; then echo "$ROOT/Extensions/Firefox/dist/convoy-$ext.xpi"; fi
+}
+
+# ---------------------------------------------------------------------------
+# 6. push -- the first thing that goes public.
+# ---------------------------------------------------------------------------
+step_push() {
+    [ "$(git symbolic-ref --short -q HEAD)" = "main" ] || die "not on main"
+    [ -z "$(git status --porcelain)" ] || die "the working tree is dirty" "$(git status --short)"
+    [ "$(git rev-parse "$TAG^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ] \
+        || die "$TAG does not point at HEAD" "Something was committed after the build, so the build is not what HEAD is." "Run: git tag -d $TAG   then ./ship.sh $TAG"
+    git fetch -q origin --tags || die "cannot reach origin"
+    git merge-base --is-ancestor origin/main HEAD || die "origin/main has commits you do not have; pull first"
+    step_verify                                  # the built files, once more, before anything goes out
+
+    step "6. Push main and $TAG"
+    confirm "Push main ($(git rev-list --count origin/main..HEAD) commit(s)) and $TAG to origin?" || die "not pushed; nothing was changed"
+    git push origin main "refs/tags/$TAG"
+    ok "pushed"
+
+    # A starting point for the release notes: edit it, or write your own.
+    local prev f
+    prev="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+    {
+        echo "## What's new"; echo
+        git log --no-merges --pretty='- %s' "${prev:+$prev..}HEAD"
+        echo; echo "## Checksums (SHA-256)"; echo; echo '```'
+        while IFS= read -r f; do
+            case "$f" in *.dmg|*.pkg|*.xpi) printf '%s  %s\n' "$(shasum -a 256 <"$f" | cut -d' ' -f1)" "$(basename "$f")" ;; esac
+        done < <(release_files)
+        echo '```'
+    } >"$DIST/release-notes.md"
+
+    echo ""
+    echo "Now create the release in the browser:"
+    echo "  https://github.com/$(repo)/releases/new?tag=$TAG"
+    echo "  Title: Convoy $VERSION"
+    echo "  Notes: a draft is in $DIST/release-notes.md"
+    echo "  Attach exactly these files (do not rebuild them):"
+    release_files | sed 's/^/    /'
+    echo "  Publish it as a normal release: not a draft, not a pre-release."
+    echo ""
+    echo "Then run: ./ship.sh $TAG pages"
+}
+
+# ---------------------------------------------------------------------------
+# 7. pages -- the appcast goes live here. Refuses unless the release is
+#    published and its files are byte for byte the ones that were built.
+# ---------------------------------------------------------------------------
+step_pages() {
+    step "7. Pages repo"
+    local r f name branch files others path
+    r="$(repo)"
+
+    git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 || die "$TAG is not on origin" "Run: ./ship.sh $TAG push"
+    while IFS= read -r f; do
+        name="$(basename "$f")"
+        curl -fsSL "https://github.com/$r/releases/download/$TAG/$name" -o "$TMP/download" 2>/dev/null \
+            || die "$name cannot be downloaded from the release" "Is the release published (not a draft)? Is $name attached?"
+        [ "$(shasum -a 256 <"$TMP/download" | cut -d' ' -f1)" = "$(shasum -a 256 <"$f" | cut -d' ' -f1)" ] \
+            || die "$name on the release is not the file that was built" "Remove it from the release and attach $f."
+        ok "on the release, byte for byte: $name"
+    done < <(release_files)
+
+    git -C "$PAGES" fetch -q origin || die "cannot reach the Pages remote"
+    branch="$(git -C "$PAGES" symbolic-ref --short HEAD)"
+    git -C "$PAGES" merge-base --is-ancestor "origin/$branch" HEAD || die "the Pages clone is behind its origin; pull it first"
+    git -C "$PAGES" diff --cached --quiet || die "the Pages clone has staged changes; unstage them first"
+
+    # 1. The appcast, built earlier from this clone's copy.
+    cp "$WORK/convoy/appcast.xml" "$PAGES/convoy/appcast.xml"
+
+    # 2. latest.json: what the website's download buttons read.
+    mb() { awk -v b="$(wc -c <"$1" | tr -d ' ')" 'BEGIN { printf "%.1f MB", b / 1048576 }'; }
+    cat >"$PAGES/convoy/latest.json" <<EOF
+{
+  "version": "$VERSION",
+  "repo": "$r",
+  "tag": "$TAG",
+  "pkg": "Convoy-$VERSION.pkg",
+  "dmg": "Convoy-$VERSION.dmg",
+  "pkgSize": "$(mb "$DIST/Convoy-$VERSION.pkg")",
+  "dmgSize": "$(mb "$DIST/Convoy-$VERSION.dmg")",
+  "date": "$((10#$(date +%d))) $(LC_ALL=C date +%B) $(date +%Y)",
+  "prerelease": false
+}
+EOF
+    files="convoy/appcast.xml convoy/latest.json ${CONVOY_PAGES_EXTRA:-}"
+
+    # 3. The extension update list, when this release brings a new extension.
+    if [[ "$(release_files)" == *.xpi* ]]; then
+        local ext xpi
+        ext="$(plutil -extract version raw -o - Extensions/Chromium/manifest.json)"
+        xpi="$ROOT/Extensions/Firefox/dist/convoy-$ext.xpi"
+        python3 - "$PAGES/convoy/firefox-updates.json" "$ROOT/Extensions/Firefox/manifest.json" "$ext" \
+            "https://github.com/$r/releases/download/$TAG/convoy-$ext.xpi" "$(shasum -a 256 <"$xpi" | cut -d' ' -f1)" <<'PY'
+import json, os, sys
+path, manifest, version, link, digest = sys.argv[1:6]
+addon_id = json.load(open(manifest))["browser_specific_settings"]["gecko"]["id"]
+doc = json.load(open(path)) if os.path.exists(path) else {"addons": {}}
+updates = doc["addons"].setdefault(addon_id, {"updates": []})["updates"]
+updates[:] = [u for u in updates if u["version"] != version]
+updates.append({"version": version, "update_link": link, "update_hash": "sha256:" + digest})
+updates.sort(key=lambda u: [int(p) for p in u["version"].split(".")])
+with open(path, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+PY
+        files="$files convoy/firefox-updates.json"
+    fi
+
+    # Show exactly what is about to go live, and what is being left out.
+    echo ""
+    echo "  Will be committed to the Pages repo: $files"
+    others="$(git -C "$PAGES" status --porcelain | while IFS= read -r line; do
+        path="${line:3}"
+        [[ " $files " == *" $path "* ]] || echo "    $line"
+    done)"
+    [ -z "$others" ] || { echo "  Modified there but NOT part of this release (left alone):"; echo "$others"; }
+    echo ""
+    echo "  convoy/latest.json:"; sed 's/^/    /' "$PAGES/convoy/latest.json"
+    git -C "$PAGES" --no-pager diff --stat -- convoy | sed 's/^/  /'
+    confirm "Commit and push these? Installed copies will be offered $VERSION." || die "not pushed" "The files are written in the Pages clone; rerun this step when ready."
+
+    # shellcheck disable=SC2086
+    git -C "$PAGES" add -- $files
+    if git -C "$PAGES" diff --cached --quiet; then
+        echo "  nothing new to commit (already committed)"
+    else
+        git -C "$PAGES" commit -q -m "Convoy $VERSION"
+    fi
+    git -C "$PAGES" push origin "HEAD:$branch"
+    ok "pushed to the Pages repo"
+    echo ""
+    echo "GitHub Pages takes a minute or two. Then run: ./ship.sh $TAG live"
+}
+
+# ---------------------------------------------------------------------------
+# 8. live -- what users will fetch is what was pushed.
+# ---------------------------------------------------------------------------
+step_live() {
+    step "8. Check what users will fetch"
+    local feed base name i seen
+    feed="$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" Resources/Info.plist)"
+    base="${feed%/appcast.xml}"
+    for name in appcast.xml latest.json firefox-updates.json; do
+        git -C "$PAGES" show "HEAD:convoy/$name" >"$TMP/expected" 2>/dev/null || continue
+        seen=""
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+            if curl -fsS "$base/$name?cb=$(date +%s)" -o "$TMP/live" 2>/dev/null && cmp -s "$TMP/live" "$TMP/expected"; then seen=1; break; fi
+            [ "$i" -gt 1 ] || echo "  waiting for GitHub Pages to publish $name ..."
+            sleep 10
+        done
+        [ -n "$seen" ] || die "the live $name does not match what was pushed after 3 minutes" "$base/$name"
+        ok "live $name is what was pushed"
+    done
+    echo ""
+    echo "$VERSION is out. Now watch a real 1.1.0 install update itself: Convoy > Check for Updates."
+}
+
 # ---------------------------------------------------------------------------
 STEPS="checks extension tag build verify"
 
 if [ -n "$ONLY" ]; then
-    case " $STEPS " in
+    case " $STEPS push pages live " in
         *" $ONLY "*) "step_$ONLY" ;;
-        *) die "unknown step '$ONLY'" "Steps: $STEPS" ;;
+        *) die "unknown step '$ONLY'" "Steps: $STEPS push pages live" ;;
     esac
     exit 0
 fi
@@ -248,3 +432,4 @@ echo "Prepared $TAG (build $BUILD). Nothing has been pushed or published."
 echo "  $DIST/Convoy-$VERSION.{dmg,pkg,zip} and their checksums"
 echo "  appcast item (scratch copy): $WORK/convoy/appcast.xml"
 echo "  tag $TAG exists locally; to abandon this release: git tag -d $TAG"
+echo "  Next, when you are ready to go public: ./ship.sh $TAG push"
