@@ -28,7 +28,7 @@ What each step does, and why it is there:
 | # | Step | Protects against |
 |---|------|------------------|
 | 1 | `checks` | On `main`, clean tree, not behind origin; tag free and newer than the last; build number above the appcast's (Sparkle compares it); toolchain; Sparkle key matches the Keychain; `swift test`. All cheap, and all before anything irreversible. |
-| 2 | `extension` | A stale signed `.xpi` (the source changed after signing). If there is no signed package for this version it signs one, after asking. This is the only step that cannot be undone. |
+| 2 | `extension` | A stale signed `.xpi` (the source changed after signing). The signed package is compared with what the source builds: `manifest.json` as data (signing re-lays it out with the same content, so a byte comparison always fails), every other file byte for byte. If there is no signed package for this version it signs one, after asking. This is the only step that cannot be undone. |
 | 3 | `tag` | `release.sh` builds from the tag at HEAD. The tag stays local. |
 | 4 | `build` | Runs `release.sh` unchanged: universal build, gates, DMG, pkg, update zip, appcast item. The appcast is written to a scratch copy under `.build/ship-pages/`, so the real Pages clone is never touched and a rerun never leaves a mess. |
 | 5 | `verify` | What `release.sh` does not check: the app inside the update **zip** passes every gate (the DMG and pkg are checked, the zip is not, and every installed copy updates from the zip), and the appcast item points at the right file, has the right length and build number, has no hardware restriction, and its EdDSA signature verifies. |

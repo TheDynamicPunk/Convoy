@@ -132,12 +132,20 @@ step_extension() {
     xpi="Extensions/Firefox/dist/convoy-$ext.xpi"
 
     if [ -f "$xpi" ]; then
+        local hint='Bump "version" in Extensions/Chromium/manifest.json, commit, and run this again.'
         bash ./Extensions/build-firefox.sh "$TMP/source" >/dev/null
         unzip -q "$xpi" -d "$TMP/signed"
         rm -rf "$TMP/signed/META-INF"                      # AMO's signature files
+        # Signing re-lays-out manifest.json (same content, different formatting),
+        # so that one file is compared as data and every other file byte for byte.
+        python3 - "$TMP/source/manifest.json" "$TMP/signed/manifest.json" <<'PY' \
+            || die "the signed convoy-$ext.xpi is STALE: manifest.json changed after it was signed" "$hint"
+import json, sys
+sys.exit(0 if json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])) else 1)
+PY
+        rm "$TMP/source/manifest.json" "$TMP/signed/manifest.json"
         diff -r -q "$TMP/source" "$TMP/signed" >"$TMP/ext.diff" || die "the signed convoy-$ext.xpi is STALE: the extension changed after it was signed" \
-            "$(sed "s#$TMP/##g" "$TMP/ext.diff" | head -8)" \
-            "Bump \"version\" in Extensions/Chromium/manifest.json, commit, and run this again."
+            "$(sed "s#$TMP/##g" "$TMP/ext.diff" | head -8)" "$hint"
         ok "signed convoy-$ext.xpi matches the source"
         return
     fi
