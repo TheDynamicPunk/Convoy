@@ -417,7 +417,9 @@ struct DownloadRowView: View {
         SegmentBar(map: task.segmentMap, progress: task.progress, color: statusColor,
                    split: showsParts ? 1 : 0)
             .frame(height: 7)
-            .animation(.easeOut(duration: 0.25), value: task.progress)
+            // No `.animation(value: task.progress)`: progress changes on every
+            // network chunk, so the tween never ends and this Canvas redraws
+            // every display frame while a download runs.
             .animation(reduceMotion ? nil : .smooth(duration: 0.55), value: showsParts)
             .accessibilityElement()
             .accessibilityLabel("Progress")
