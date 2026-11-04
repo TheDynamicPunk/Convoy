@@ -199,14 +199,6 @@ public final class DownloadManager: ObservableObject {
         return task
     }
     
-    public func addDownloads(urls: [URL], destination: URL? = nil) async throws {
-        for url in urls {
-            // try? so a conflict on one URL (which throws DownloadConflictError
-            // and queues a sheet) doesn't abort the rest of the batch.
-            _ = try? await addDownload(url: url, destination: destination)
-        }
-    }
-
     /// Adds a YouTube download that yt-dlp performs end to end — fetching the
     /// chosen format, pulling an audio track and muxing when the format is
     /// video-only, and writing one finished file.
@@ -799,10 +791,6 @@ public final class DownloadManager: ObservableObject {
         for task in waitingTasks {
             Task { try? await self.startDownload(task) }
         }
-    }
-    
-    public func setSpeedLimit(_ bytesPerSecond: Int64) {
-        // Apply to all active tasks
     }
     
     private func startNextQueued() {

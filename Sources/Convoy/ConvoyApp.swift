@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftData
 import DownloadEngine
 import AppKit
 import os

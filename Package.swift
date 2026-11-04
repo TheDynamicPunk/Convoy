@@ -11,7 +11,6 @@ let package = Package(
         .executable(name: "helper-manifest", targets: ["HelperManifestTool"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0"),
     ],
     targets: [
@@ -36,10 +35,7 @@ let package = Package(
             ]
         ),
         .target(
-            name: "DownloadEngine",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-            ]
+            name: "DownloadEngine"
         ),
         .target(
             name: "IPCKit",
@@ -49,10 +45,11 @@ let package = Package(
             name: "NativeMessagingHost",
             dependencies: ["IPCKit"]
         ),
-        // Maintainer-side only: builds and signs the helper list that
-        // HelperManifestStore verifies downloads against. Never copied into
-        // the app bundle -- build.sh ships only Convoy and
-        // NativeMessagingHost.
+        // Maintainer-side only: resolves, hashes and cross-checks the helper
+        // list that HelperManifestStore verifies downloads against. The list
+        // itself is unsigned; it ships inside the app bundle, which macOS
+        // seals. Never copied into the app bundle -- build.sh ships only
+        // Convoy and NativeMessagingHost.
         .executableTarget(
             name: "HelperManifestTool",
             dependencies: ["DownloadEngine"]

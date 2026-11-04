@@ -131,16 +131,6 @@ struct GeneralSettingsView: View {
             }
 
             Section {
-                Picker("App language", selection: $settings.language) {
-                    Text("English").tag("en")
-                }
-            } header: {
-                Text("Language")
-            } footer: {
-                Text("Additional languages are planned for a future update.")
-            }
-
-            Section {
                 Picker("Preferred audio language", selection: $settings.preferredAudioLanguage) {
                     ForEach(audioLanguages) { language in
                         Text(language.name).tag(language.code)

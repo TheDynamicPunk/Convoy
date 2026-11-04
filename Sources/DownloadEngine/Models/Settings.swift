@@ -19,7 +19,6 @@ public final class AppSettings: ObservableObject {
         case playCompletionSound
         case temporaryFilesNoticeThresholdGB
         case theme
-        case language
         case preferredAudioLanguage
         case youtubeUseBrowserCookies
         case youtubeCookieBrowser
@@ -64,7 +63,6 @@ public final class AppSettings: ObservableObject {
     @AppStorage(Key.temporaryFilesNoticeThresholdGB.rawValue) public var temporaryFilesNoticeThresholdGB: Double =
         TemporaryStorageNotice.defaultThresholdGB
     @AppStorage(Key.theme.rawValue) public var theme: AppTheme = .system
-    @AppStorage(Key.language.rawValue) public var language: String = "en"
     /// BCP-47 preference used only when a DASH manifest offers more than one
     /// audio track. An empty value leaves the manifest's own default intact.
     @AppStorage(Key.preferredAudioLanguage.rawValue) public var preferredAudioLanguage: String = ""
