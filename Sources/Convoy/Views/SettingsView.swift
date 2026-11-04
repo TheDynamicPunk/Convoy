@@ -109,9 +109,15 @@ struct GeneralSettingsView: View {
                 Text("When on, Convoy lives only in the menu bar — no Dock icon and not shown in the ⌘+Tab app switcher. The icon shows while Convoy's window is open.")
             }
 
-            Section("Downloads") {
+            Section {
+                Toggle("Show dialog when download is captured", isOn: $settings.confirmCapturedDownloads)
                 Toggle("Start downloads automatically", isOn: $settings.autoStartDownloads)
                 Toggle("Bring Convoy to the front when a download is captured", isOn: $settings.bringWindowToFrontOnCapture)
+                    .disabled(settings.confirmCapturedDownloads)
+            } header: {
+                Text("Downloads")
+            } footer: {
+                Text("Dialog shows the file's name, size and destination before a captured download is added.")
             }
 
             Section {

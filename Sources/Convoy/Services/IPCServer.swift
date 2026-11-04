@@ -198,17 +198,10 @@ final class IPCServer {
                 
                 // Every request through this endpoint is a genuine capture
                 // (extension button, context menu, or an intercepted native
-                // browser download) — gate window-focusing here the same way
-                // ConvoyApp's onOpenURL gates it for the YouTube
-                // hand-off path, so the setting covers every capture route,
-                // not just YouTube's. showMainWindow() rather than a bare
-                // NSApp.activate: it's the shared, already-correct
-                // implementation (deminiaturizes, creates the window fresh
-                // if none exists) — see MainWindowTracker.
-                if AppSettings.shared.bringWindowToFrontOnCapture {
-                    MainWindowTracker.shared.showMainWindow()
-                }
-
+                // browser download). What a capture does to the window —
+                // bringWindowToFrontOnCapture, or the review window coming
+                // forward by itself — is CaptureCoordinator's decision, made
+                // once for every capture route; see its handle(_:).
                 let referrerURL = (dict["referrer"] as? String).flatMap { URL(string: $0) }
                 
                 // 180 to match FilenameResolver.sanitize's own limit rather
@@ -235,72 +228,68 @@ final class IPCServer {
                     )
                 }
 
-                let destURL: URL?
-                if let fname = providedFilename, !fname.isEmpty {
-                    destURL = URL(fileURLWithPath: AppSettings.shared.downloadDirectory, isDirectory: true).appendingPathComponent(fname)
-                } else {
-                    destURL = nil
-                }
-                
-                for url in urls {
+                // File size measured by the extension, if any. Read from
+                // rawHeaders because mergedHeaders dropped it; used for
+                // duplicate detection and shown up front in the review window.
+                let expectedSize: Int64? = (rawHeaders["Content-Length"] ?? rawHeaders["content-length"]).flatMap { Int64($0) }
+                let explicitSegments = dict["segmentCount"] as? Int
+
+                // One CapturedDownload per URL. CaptureCoordinator decides what
+                // happens next — ask the person first (the default) or add
+                // straight away — and both end in DownloadManager.addCaptured,
+                // so there is one place that turns a capture into a task.
+                let captures = urls.map { url -> CapturedDownload in
                     let throttledURL = Self.bypassGooglevideoThrottle(url)
 
                     // HLS/DASH manifest URLs → native stream download pipeline.
                     // Regular URLs → existing byte-range / Re-link path.
                     if let sType = streamType, sType == "hls" || sType == "dash" {
-                        let filename = providedFilename ?? Self.streamFilename(from: throttledURL, referrerURL: referrerURL)
-                        let streamDest = URL(
-                            fileURLWithPath: AppSettings.shared.downloadDirectory,
-                            isDirectory: true
-                        ).appendingPathComponent(filename)
-                        FlyingCaptureAnimation.shared.play(filename: filename)
-                        Task {
-                            _ = try? await DownloadManager.shared.addStreamDownload(
-                                url: throttledURL,
+                        return CapturedDownload(
+                            url: throttledURL,
+                            headers: mergedHeaders,
+                            matchHeaders: rawHeaders,
+                            referrerURL: referrerURL,
+                            // A stream always has a name: the extension's
+                            // title if it resolved one, else one derived from
+                            // the manifest or the referrer host.
+                            suggestedFilename: providedFilename
+                                ?? Self.streamFilename(from: throttledURL, referrerURL: referrerURL),
+                            // .mediaTitle only when the extension actually
+                            // resolved one from the page. streamFilename's
+                            // own fallback is derived from the manifest or
+                            // the referrer host, and a Content-Disposition
+                            // header is a better name than either.
+                            filenameSource: providedFilename == nil ? .pageMetadata : .mediaTitle,
+                            expectedSize: nil,
+                            segmentCount: nil,
+                            stream: DuplicateDownloadConflict.StreamInfo(
                                 streamType: sType,
-                                destination: destURL ?? streamDest,
-                                // .mediaTitle only when the extension actually
-                                // resolved one from the page. streamFilename's
-                                // own fallback is derived from the manifest or
-                                // the referrer host, and a Content-Disposition
-                                // header is a better name than either.
-                                filenameSource: providedFilename == nil ? .pageMetadata : .mediaTitle,
-                                customHeaders: mergedHeaders,
-                                referrerURL: referrerURL,
                                 representationId: representationId,
                                 bandwidth: bandwidth,
                                 hlsAudioTracks: audioTracks
                             )
-                        }
-                    } else {
-                        let filename = providedFilename ?? (throttledURL.lastPathComponent.isEmpty ? (throttledURL.host ?? throttledURL.absoluteString) : throttledURL.lastPathComponent)
-                        FlyingCaptureAnimation.shared.play(filename: filename)
-                        // File size measured by the extension, if any. Read before
-                        // mergedHeaders drops it; used for duplicate detection.
-                        let expectedSize: Int64? = (rawHeaders["Content-Length"] ?? rawHeaders["content-length"]).flatMap { Int64($0) }
-                        Task {
-                            let relinked = await DownloadManager.shared.matchFreshURL(throttledURL, headers: rawHeaders)
-                            if !relinked {
-                                let explicitSegments = dict["segmentCount"] as? Int
-                                _ = try? await DownloadManager.shared.addDownload(
-                                    url: throttledURL, destination: destURL,
-                                    // destURL is non-nil exactly when the
-                                    // extension supplied a filename, and the
-                                    // latch is the only path that does — every
-                                    // other caller (context menu, intercepted
-                                    // browser download) sends none and keeps
-                                    // the ordinary Content-Disposition
-                                    // behaviour. If another path ever starts
-                                    // sending one, it must be a page-resolved
-                                    // media title or this is the wrong source.
-                                    filenameSource: destURL == nil ? nil : .mediaTitle,
-                                    segmentCount: explicitSegments, customHeaders: mergedHeaders, referrerURL: referrerURL,
-                                    expectedSize: expectedSize
-                                )
-                            }
-                        }
+                        )
                     }
+
+                    return CapturedDownload(
+                        url: throttledURL,
+                        headers: mergedHeaders,
+                        matchHeaders: rawHeaders,
+                        referrerURL: referrerURL,
+                        // Non-nil exactly when the extension supplied a
+                        // filename, and the source is then .mediaTitle: every
+                        // other caller (context menu) sends none and keeps
+                        // the ordinary Content-Disposition behaviour. If
+                        // another path ever starts sending one, it must be a
+                        // page-resolved media title or this is the wrong source.
+                        suggestedFilename: providedFilename,
+                        filenameSource: providedFilename == nil ? nil : .mediaTitle,
+                        expectedSize: expectedSize,
+                        segmentCount: explicitSegments,
+                        stream: nil
+                    )
                 }
+                CaptureCoordinator.shared.handle(captures)
                 return self.encode(["success": true, "count": urls.count])
 
             }

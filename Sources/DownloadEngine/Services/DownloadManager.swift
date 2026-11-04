@@ -120,7 +120,7 @@ public final class DownloadManager: ObservableObject {
     /// expectedSize is the file's whole size in bytes, if the caller knows it.
     /// It takes part in duplicate detection (see DownloadIdentity); nil means
     /// unknown.
-    public func addDownload(url: URL, destination: URL? = nil, filenameSource: FilenameSource? = nil, segmentCount: Int? = nil, customHeaders: [String: String] = [:], referrerURL: URL? = nil, folderIsExplicit: Bool = false, skipConflictCheck: Bool = false, expectedSize: Int64? = nil) async throws -> DownloadTask {
+    public func addDownload(url: URL, destination: URL? = nil, filenameSource: FilenameSource? = nil, segmentCount: Int? = nil, customHeaders: [String: String] = [:], referrerURL: URL? = nil, folderIsExplicit: Bool = false, skipConflictCheck: Bool = false, expectedSize: Int64? = nil, startAutomatically: Bool? = nil) async throws -> DownloadTask {
         let source = filenameSource ?? (destination == nil ? .originalURL : .userProvided)
         var dest = normalizedDestination(destination, fallbackURL: url)
         // Captured before any deduplication touches dest — this, not
@@ -128,7 +128,10 @@ public final class DownloadManager: ObservableObject {
         // against. See DownloadTask.originalName's doc comment.
         let originalName = dest.lastPathComponent
         let segments = segmentCount ?? settings.defaultSegmentCount
-        let startsAutomatically = settings.autoStartDownloads
+        // startAutomatically is the person's answer in the capture review
+        // window (Start vs Download Later); nil everywhere else, which leaves
+        // it to the Settings switch exactly as before.
+        let startsAutomatically = startAutomatically ?? settings.autoStartDownloads
 
         // Conflict check: if another task (active or completed) already
         // looks like the same download — same source URL, or the same
@@ -153,7 +156,8 @@ public final class DownloadManager: ObservableObject {
                 existingTask: existing,
                 suggestedAlternativeName: altName,
                 resolvingTaskID: nil,
-                incomingFolderIsExplicit: folderIsExplicit
+                incomingFolderIsExplicit: folderIsExplicit,
+                incomingStartsAutomatically: startAutomatically
             ))
             throw DownloadConflictError()
         }
@@ -343,7 +347,8 @@ public final class DownloadManager: ObservableObject {
         preferredAudioLanguage: String? = nil,
         hlsAudioTracks: [HLSAudioCandidate]? = nil,
         folderIsExplicit: Bool = false,
-        skipConflictCheck: Bool = false
+        skipConflictCheck: Bool = false,
+        startAutomatically: Bool? = nil
     ) async throws -> DownloadTask {
         let source = filenameSource ?? (destination == nil ? .originalURL : .userProvided)
         var dest = normalizedDestination(destination, fallbackURL: url)
@@ -352,8 +357,9 @@ public final class DownloadManager: ObservableObject {
         // resolved title) — unlike the byte-range engine's extension, a
         // stream's identity never needs a later mid-flight recheck.
         let originalName = dest.lastPathComponent
-        let startsAutomatically = settings.autoStartDownloads
         let audioLanguage = preferredAudioLanguage ?? settings.preferredAudioLanguage.nilIfEmpty
+        // See addDownload: nil means "whatever Settings says".
+        let startsAutomatically = startAutomatically ?? settings.autoStartDownloads
 
         // Which category this belongs in; see addYouTubeDownload. A stream's
         // name has no extension yet, so extension rules are matched against
@@ -388,7 +394,8 @@ public final class DownloadManager: ObservableObject {
                     preferredAudioLanguage: audioLanguage,
                     hlsAudioTracks: hlsAudioTracks
                 ),
-                incomingFolderIsExplicit: folderIsExplicit
+                incomingFolderIsExplicit: folderIsExplicit,
+                incomingStartsAutomatically: startAutomatically
             ))
             throw DownloadConflictError()
         }
@@ -1031,7 +1038,8 @@ public final class DownloadManager: ObservableObject {
                 preferredAudioLanguage: info.preferredAudioLanguage,
                 hlsAudioTracks: info.hlsAudioTracks,
                 folderIsExplicit: conflict.incomingFolderIsExplicit,
-                skipConflictCheck: true
+                skipConflictCheck: true,
+                startAutomatically: conflict.incomingStartsAutomatically
             )
         }
         return try await addDownload(
@@ -1041,7 +1049,8 @@ public final class DownloadManager: ObservableObject {
             customHeaders: conflict.incomingHeaders,
             referrerURL: conflict.incomingReferrer,
             folderIsExplicit: conflict.incomingFolderIsExplicit,
-            skipConflictCheck: true
+            skipConflictCheck: true,
+            startAutomatically: conflict.incomingStartsAutomatically
         )
     }
 
@@ -1626,6 +1635,11 @@ public struct DuplicateDownloadConflict: Identifiable {
     /// the same standing; without it a folder the person chose would quietly
     /// become a suggestion that a category could then move.
     public let incomingFolderIsExplicit: Bool
+    /// The Start / Download Later answer from the capture review window, kept
+    /// so a duplicate prompt that follows it does not lose it: "Save as
+    /// separate" must still honour "Download Later". Nil when the request had
+    /// no such answer, which leaves it to Settings as always.
+    public let incomingStartsAutomatically: Bool?
 
     public init(
         incomingURL: URL,
@@ -1638,7 +1652,8 @@ public struct DuplicateDownloadConflict: Identifiable {
         resolvingTaskID: UUID?,
         incomingStreamInfo: StreamInfo? = nil,
         incomingYouTubeInfo: YouTubeInfo? = nil,
-        incomingFolderIsExplicit: Bool = false
+        incomingFolderIsExplicit: Bool = false,
+        incomingStartsAutomatically: Bool? = nil
     ) {
         self.incomingURL = incomingURL
         self.incomingHeaders = incomingHeaders
@@ -1651,6 +1666,7 @@ public struct DuplicateDownloadConflict: Identifiable {
         self.incomingStreamInfo = incomingStreamInfo
         self.incomingYouTubeInfo = incomingYouTubeInfo
         self.incomingFolderIsExplicit = incomingFolderIsExplicit
+        self.incomingStartsAutomatically = incomingStartsAutomatically
     }
 
     public struct YouTubeInfo {

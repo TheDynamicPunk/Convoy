@@ -14,6 +14,7 @@ public final class AppSettings: ObservableObject {
         case speedLimit
         case autoStartDownloads
         case bringWindowToFrontOnCapture
+        case confirmCapturedDownloads
         case showNotifications
         case playCompletionSound
         case temporaryFilesNoticeThresholdGB
@@ -44,6 +45,17 @@ public final class AppSettings: ObservableObject {
     /// and the new row appearing) for anyone who finds window-stealing
     /// disruptive, e.g. while working in another app.
     @AppStorage(Key.bringWindowToFrontOnCapture.rawValue) public var bringWindowToFrontOnCapture: Bool = true
+    /// Whether a download captured from the browser is shown to the person
+    /// first — name, size, destination — and only becomes a row in the list
+    /// once they confirm. Off restores the original behaviour: the capture
+    /// joins the list immediately (and starts, if automatic start is on).
+    ///
+    /// Applies to captures arriving over IPC (extension button, context menu,
+    /// intercepted browser download, stream capture). Not to the YouTube
+    /// hand-off or the manual Add Downloads window, which are already dialogs.
+    /// On by default: seeing what is about to be added is the point of the
+    /// feature, and the dialog's own "Don't ask again" turns it off.
+    @AppStorage(Key.confirmCapturedDownloads.rawValue) public var confirmCapturedDownloads: Bool = true
     @AppStorage(Key.showNotifications.rawValue) public var showNotifications: Bool = true
     @AppStorage(Key.playCompletionSound.rawValue) public var playCompletionSound: Bool = true
     /// When on, Convoy lives only in the menu bar — no Dock icon and not shown in the ⌘+Tab app switcher.
