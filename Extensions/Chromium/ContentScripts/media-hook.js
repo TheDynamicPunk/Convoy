@@ -29,6 +29,15 @@
   const recentManifests = [];
   const MAX_MANIFESTS = 40;
 
+  // First manifest seen per CDN directory, kept separately from the rolling
+  // buffer above. A feed can preload a few dozen videos, each adding a master
+  // plus its variant playlists, and the buffer would evict an early card's
+  // master before that card ever starts playing. One entry per directory is
+  // all the segment-to-video matching below needs, and the first one seen is
+  // the master (players load it before any variant).
+  const manifestByGroup = new Map(); // groupKey -> { url, groupKey, at }
+  const MAX_MANIFEST_GROUPS = 200;
+
   function recordManifest(rawUrl) {
     if (!isManifestUrl(rawUrl)) return null;
     let fullUrl;
@@ -41,6 +50,12 @@
     const entry = { url: fullUrl, groupKey, at: Date.now() };
     recentManifests.push(entry);
     if (recentManifests.length > MAX_MANIFESTS) recentManifests.shift();
+    if (!manifestByGroup.has(groupKey)) {
+      manifestByGroup.set(groupKey, entry);
+      if (manifestByGroup.size > MAX_MANIFEST_GROUPS) {
+        manifestByGroup.delete(manifestByGroup.keys().next().value);
+      }
+    }
 
     // If there is strictly ONLY ONE video on the entire page (e.g. dedicated watch
     // page or single modal player), this manifest can safely be associated with it.
@@ -104,6 +119,77 @@
     return null;
   }
 
+  // -- Which <video> is a stream's data actually going into? ----------------
+  // On a page with several videos (a feed or grid) nothing on the element says
+  // which manifest it plays: its src is an opaque blob: URL. But the bytes can
+  // be followed. A segment is fetched into an ArrayBuffer, the player hands
+  // that buffer to a SourceBuffer, the SourceBuffer belongs to a MediaSource,
+  // and that MediaSource was wrapped in the blob: URL assigned to one specific
+  // <video>. Each hop is an object identity, so there is no timing or
+  // proximity guessing anywhere in it.
+  //
+  // Players that transmux before appending (HLS .ts segments) append a new
+  // buffer, so the identity is lost for them and those videos stay untagged.
+  // That is deliberate: no timing, length or position is ever used to guess.
+  const bufferSource = new WeakMap();        // ArrayBuffer -> URL it was fetched from
+  const sourceBufferOwner = new WeakMap();   // SourceBuffer -> MediaSource
+  const mediaSourceVideo = new WeakMap();    // MediaSource -> <video>
+  const blobUrlToMediaSource = new Map();    // blob: URL -> MediaSource, until assigned or revoked
+  // A blob URL is normally assigned to a <video> or revoked straight after it
+  // is made. This only bounds the entries for a player that does neither, so
+  // they cannot pile up (each one keeps a whole MediaSource alive).
+  const MAX_PENDING_BLOB_URLS = 50;
+
+  // Called as a blob: URL is assigned to a media element.
+  function noteMediaSource(video, value) {
+    if (typeof value !== 'string' || !value.startsWith('blob:')) return;
+    const mediaSource = blobUrlToMediaSource.get(value);
+    if (!mediaSource) return;
+    blobUrlToMediaSource.delete(value);
+    mediaSourceVideo.set(mediaSource, video);
+  }
+
+  function clearAssociation(video) {
+    video.removeAttribute('data-mdl-group');
+    video.removeAttribute('data-mdl-manifest');
+  }
+
+  // A tag describes the source the element had when it was made. Players reuse
+  // one <video> across items, so a new source must not inherit the old tag:
+  // a stale one would download the wrong video with nothing to show it.
+  function resetAssociation(video, value) {
+    if (typeof value !== 'string' || video.getAttribute('src') === value) return;
+    clearAssociation(video);
+  }
+
+  // The recorded manifest whose directory holds this segment. Longest
+  // directory wins. A manifest at the root of an origin claims every file on
+  // it, which says nothing about which video a segment belongs to, so those
+  // are never matched.
+  function manifestForSegment(segmentUrl) {
+    let full;
+    try { full = new URL(segmentUrl, location.href).href; } catch { return null; }
+    let best = null;
+    for (const entry of manifestByGroup.values()) {
+      if (!full.startsWith(entry.groupKey)) continue;
+      if (!best || entry.groupKey.length > best.groupKey.length) best = entry;
+    }
+    if (!best) return null;
+    try { if (new URL(best.groupKey).pathname === '/') return null; } catch { return null; }
+    return best;
+  }
+
+  function attributeAppendedData(sourceBuffer, data) {
+    const mediaSource = sourceBufferOwner.get(sourceBuffer);
+    const video = mediaSource && mediaSourceVideo.get(mediaSource);
+    if (!video) return;
+    const buffer = ArrayBuffer.isView(data) ? data.buffer : data;
+    const url = buffer && bufferSource.get(buffer);
+    if (!url) return;
+    const manifest = manifestForSegment(url);
+    if (manifest) tagVideo(video, manifest.groupKey, manifest.url);
+  }
+
   function handleMediaSrc(video, srcVal) {
     if (!video || typeof srcVal !== 'string') return;
 
@@ -136,7 +222,16 @@
   if (typeof URL !== 'undefined' && URL.createObjectURL) {
     const origCreateObjectURL = URL.createObjectURL;
     URL.createObjectURL = function (obj) {
-      return origCreateObjectURL.apply(this, arguments);
+      const blobUrl = origCreateObjectURL.apply(this, arguments);
+      try {
+        if (typeof MediaSource !== 'undefined' && obj instanceof MediaSource) {
+          blobUrlToMediaSource.set(blobUrl, obj);
+          if (blobUrlToMediaSource.size > MAX_PENDING_BLOB_URLS) {
+            blobUrlToMediaSource.delete(blobUrlToMediaSource.keys().next().value);
+          }
+        }
+      } catch {}
+      return blobUrl;
     };
   }
 
@@ -154,6 +249,8 @@
         },
         set(val) {
           try {
+            noteMediaSource(this, val);
+            resetAssociation(this, val);
             handleMediaSrc(this, val);
           } catch {}
           return origSrcDesc.set.call(this, val);
@@ -172,6 +269,8 @@
         set(val) {
           try {
             if (typeof MediaSource !== 'undefined' && val instanceof MediaSource) {
+              clearAssociation(this);
+              mediaSourceVideo.set(val, this);
               // No URL to inspect on a MediaSource itself, so this can't be
               // resolved deterministically the way handleMediaSrc's other
               // paths are. Match its tier-3 fallback instead: only attribute
@@ -196,6 +295,8 @@
     Element.prototype.setAttribute = function (name, value) {
       try {
         if (this instanceof HTMLMediaElement && typeof name === 'string' && name.toLowerCase() === 'src') {
+          noteMediaSource(this, value);
+          resetAssociation(this, value);
           handleMediaSrc(this, value);
         }
       } catch {}
@@ -225,6 +326,7 @@
     const origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (method, url) {
       try {
+        if (url) this.__mdlUrl = String(url);
         if (url && typeof url === 'string' && isManifestUrl(url)) {
           recordManifest(url);
         }
@@ -258,4 +360,63 @@
       } catch {}
     }
   }, true);
+
+  // -- 7. Follow segment bytes into the <video> that plays them --------------
+  // Remember where each fetched ArrayBuffer came from, then look at what is
+  // appended to a SourceBuffer. See the comment above noteMediaSource.
+  if (typeof Response !== 'undefined' && Response.prototype.arrayBuffer) {
+    const origArrayBuffer = Response.prototype.arrayBuffer;
+    Response.prototype.arrayBuffer = function () {
+      const url = this.url;
+      const promise = origArrayBuffer.apply(this, arguments);
+      if (!url) return promise;
+      return promise.then((buffer) => {
+        try { bufferSource.set(buffer, url); } catch {}
+        return buffer;
+      });
+    };
+  }
+
+  if (typeof XMLHttpRequest !== 'undefined' && XMLHttpRequest.prototype.send) {
+    const origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function () {
+      try {
+        if (this.responseType === 'arraybuffer') {
+          this.addEventListener('load', () => {
+            try {
+              if (this.response instanceof ArrayBuffer) {
+                bufferSource.set(this.response, this.__mdlUrl || this.responseURL);
+              }
+            } catch {}
+          });
+        }
+      } catch {}
+      return origSend.apply(this, arguments);
+    };
+  }
+
+  if (typeof MediaSource !== 'undefined' && MediaSource.prototype.addSourceBuffer) {
+    const origAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
+    MediaSource.prototype.addSourceBuffer = function () {
+      const sourceBuffer = origAddSourceBuffer.apply(this, arguments);
+      try { sourceBufferOwner.set(sourceBuffer, this); } catch {}
+      return sourceBuffer;
+    };
+  }
+
+  if (typeof SourceBuffer !== 'undefined' && SourceBuffer.prototype.appendBuffer) {
+    const origAppendBuffer = SourceBuffer.prototype.appendBuffer;
+    SourceBuffer.prototype.appendBuffer = function (data) {
+      try { attributeAppendedData(this, data); } catch {}
+      return origAppendBuffer.apply(this, arguments);
+    };
+  }
+
+  if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    URL.revokeObjectURL = function (blobUrl) {
+      try { blobUrlToMediaSource.delete(blobUrl); } catch {}
+      return origRevokeObjectURL.apply(this, arguments);
+    };
+  }
 })();

@@ -1137,12 +1137,40 @@
   function soleStreamPlayer() {
     let sole = null;
     for (const video of latches.keys()) {
+      if (!video.isConnected) continue;
       const src = video.currentSrc || '';
       if (!src.startsWith('blob:') && !isManifestUrl(src)) continue;
       if (sole) return null;
       sole = video;
     }
     return sole;
+  }
+
+  // Latches are keyed by <video>, and feeds create and destroy video elements
+  // constantly as cards scroll in and out. Without this every video ever seen
+  // stays in the map, and with it its pill, its panel and its window/document
+  // listeners, which also made "is this the only video" permanently false.
+  function connectedLatchCount() {
+    let count = 0;
+    for (const video of latches.keys()) if (video.isConnected) count++;
+    return count;
+  }
+
+  function pruneDetachedLatches() {
+    for (const [video, latchState] of latches) {
+      if (video.isConnected) continue;
+      latches.delete(video);
+      latchState.dispose?.();
+    }
+  }
+
+  // Un-pins every latch that isn't one the page always shows (YouTube's main
+  // player). Used when the page changes, and when a feed has more than one
+  // video and so nothing may be pinned.
+  function clearNonPersistentStreamFlags() {
+    for (const [video, latchState] of latches) {
+      if (!wantsPersistentLatch(video)) latchState.setStreamResolved(false);
+    }
   }
 
   function qualityLabel(url, el) {
@@ -1808,17 +1836,28 @@
       streamResolvedForVideo = resolved;
       refresh();
     };
-    latches.set(video, { btn, panel, refresh, setStreamResolved, show, scheduleHide });
+    latches.set(video, {
+      btn, panel, refresh, setStreamResolved, show, scheduleHide,
+      // Replaced with the full version once every listener below exists. If
+      // setup throws before then, this still removes what was already
+      // created, so the entry is never left with nothing that can clean it up.
+      dispose: () => {
+        btn.remove();
+        panel.remove();
+        video.removeAttribute(LATCHED_ATTR);
+      },
+    });
 
     // Hover reveal stays the behaviour for every non-persistent video (all
     // non-YouTube sites, plus YouTube thumbnail previews). mouseleave is only
     // wired up for those — a persistent pill must not vanish on mouseout.
     video.addEventListener('mouseenter', show);
     video.addEventListener('mousemove', show);
-    video.addEventListener('mouseleave', () => {
+    const onVideoLeave = () => {
       if (btn.getAttribute(PERSISTENT_ATTR) === '1') return;
       scheduleHide();
-    });
+    };
+    video.addEventListener('mouseleave', onVideoLeave);
     btn.addEventListener('mouseenter', () => clearTimeout(hideTimer));
     btn.addEventListener('mouseleave', () => {
       if (btn.getAttribute(PERSISTENT_ATTR) === '1') return;
@@ -1865,7 +1904,7 @@
       // Checks video attributes, child sources, shadow host (<shreddit-player src="...">),
       // and ancestor containers. Zero timestamp heuristics.
       const manifestInfo = findManifestForVideo(video);
-      const isSingleVideoPage = latches.size <= 1 || soleStreamPlayer() === video;
+      const isSingleVideoPage = connectedLatchCount() <= 1 || soleStreamPlayer() === video;
 
       safeSendMessage({
         type: 'getDetectedMedia',
@@ -1927,6 +1966,9 @@
             // automatically. Skip it entirely rather than showing a
             // confusing, unlabeled "HLS stream" row for something that isn't
             // actually a separate choice.
+            // A variant playlist of a master that is already in this list adds
+            // nothing: the master's ladder has a row for every one of them.
+            if (detected.some((o) => o !== m && o.groupKey === m.groupKey && o.variants?.length)) continue;
             if (attachedAudioUrls.has(m.url)) continue;
             // Parsing failed or found nothing to rank (fetch error, not a
             // master playlist, unsupported shape) — fall back to the single
@@ -2036,15 +2078,35 @@
     // the pill would drift out of place without observing the video box
     // itself. Observing the <video> rather than the player container because
     // that's the element positionButton actually measures.
+    let resizeObserver = null;
     if (typeof ResizeObserver === 'function') {
-      new ResizeObserver(reposition).observe(video);
+      resizeObserver = new ResizeObserver(reposition);
+      resizeObserver.observe(video);
     }
 
-    document.addEventListener('click', (e) => {
+    const onDocumentClick = (e) => {
       if (panel.style.display === 'block' && !panel.contains(e.target) && e.target !== btn) {
         panel.style.display = 'none';
       }
-    });
+    };
+    document.addEventListener('click', onDocumentClick);
+
+    // Run by pruneDetachedLatches once the video has left the page. Clearing
+    // LATCHED_ATTR lets the same element latch afresh if a framework puts it
+    // back later, instead of coming back with no pill at all.
+    latches.get(video).dispose = () => {
+      clearTimeout(hideTimer);
+      video.removeEventListener('mouseenter', show);
+      video.removeEventListener('mousemove', show);
+      video.removeEventListener('mouseleave', onVideoLeave);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
+      document.removeEventListener('click', onDocumentClick);
+      resizeObserver?.disconnect();
+      btn.remove();
+      panel.remove();
+      video.removeAttribute(LATCHED_ATTR);
+    };
 
     refresh();
   }
@@ -2095,8 +2157,14 @@
   let resolvedStreamPageURL = null;
   let resolvedStreamGroupKey = null;
 
-  function surfaceResolvedStreamLatch() {
+  function surfaceResolvedStreamLatch(connectedCount) {
     if (currentStrategy() !== 'sniff') return;
+    // A feed or grid: whichever video the person is on gets its pill by hover.
+    // Pinning one open per resolved stream would put a button on every card.
+    if (connectedCount > 1) {
+      clearNonPersistentStreamFlags();
+      return;
+    }
     const viewportCandidates = [...latches.entries()]
       .filter(([video]) => {
         const rect = video.getBoundingClientRect();
@@ -2126,7 +2194,7 @@
     }
     // 2. Otherwise only an unambiguous owner: the page's single video, or
     //    its single stream-backed one (see soleStreamPlayer).
-    if (!winner && latches.size === 1) {
+    if (!winner && connectedCount === 1) {
       winner = viewportCandidates[0]?.[0];
     }
     if (!winner) winner = soleStreamPlayer();
@@ -2153,16 +2221,15 @@
     if (resolvedStreamPageURL && resolvedStreamPageURL !== location.href) {
       resolvedStreamPageURL = null;
       resolvedStreamGroupKey = null;
-      for (const [video, latchState] of latches) {
-        if (!wantsPersistentLatch(video)) latchState.setStreamResolved(false);
-      }
+      clearNonPersistentStreamFlags();
     }
+    pruneDetachedLatches();
     document.querySelectorAll('video').forEach(latch);
     // Second pass: pierce open shadow roots to find videos the flat query missed.
     // Lightweight: only walks elements that actually host a shadow root, and
     // latch() is a no-op (returns immediately) for already-latched videos.
     querySelectorAllDeep('video').forEach(latch);
-    if (resolvedStreamPageURL === location.href) surfaceResolvedStreamLatch();
+    if (resolvedStreamPageURL === location.href) surfaceResolvedStreamLatch(connectedLatchCount());
   }
 
   // Coalesced so a mutation storm costs one sweep per frame instead of one
