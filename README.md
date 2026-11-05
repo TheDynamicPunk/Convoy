@@ -28,8 +28,13 @@ macOS asks you to approve it once — see [Installing](#installing).
 - **Updates itself** — checks once a day and asks before installing.
 - **Queue** — filter by status (downloading, completed, paused, failed) and
   search.
+- **Download categories** — sort downloads into folders for you, by file type
+  or by the site they came from. Rules have editable folders and an order, a
+  preview shows where a file would go, and Convoy tells you when a rule falls
+  back to the default folder.
 - **Menu bar item** — active downloads at a glance, with Pause All and Resume
   All.
+- **Hide Dock icon** — keeps Convoy out of the Dock while no window is open.
 - **Notifications** when downloads finish, with an optional sound.
 - **Storage cleanup** — finds what interrupted downloads left behind and
   clears it when you ask (Settings → Advanced).
@@ -40,7 +45,8 @@ Mac App Store doesn't allow apps in this category.
 
 ## Requirements
 
-macOS 14 (Sonoma) or later, on Apple silicon or Intel.
+macOS 14 (Sonoma) or later, on Apple silicon or Intel. The Firefox extension
+needs Firefox 140 or later.
 
 ## Installing
 
@@ -68,7 +74,7 @@ Each file has a `.sha256` checksum beside it. To check a download arrived
 intact, put both in one folder and run, with your file's name:
 
 ```bash
-shasum -a 256 -c Convoy-1.0.0.pkg.sha256
+shasum -a 256 -c Convoy-<version>.pkg.sha256
 ```
 
 ## Updating
