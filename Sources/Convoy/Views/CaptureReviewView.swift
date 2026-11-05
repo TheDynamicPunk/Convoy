@@ -102,6 +102,7 @@ struct CaptureReviewView: View {
                 CaptureFolderPicker(
                     folder: $model.folder,
                     filename: model.filename,
+                    isStream: capture.stream != nil,
                     hosts: CategoryRouter.hosts(from: [capture.url, capture.referrerURL])
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -329,6 +330,10 @@ private enum SaveFolderChoice: Hashable {
 private struct CaptureFolderPicker: View {
     @Binding var folder: URL?
     let filename: String
+    /// A native HLS/DASH capture. Its name has no extension yet (it is
+    /// assembled into a video file at the end), so the preview must match
+    /// extension rules the way the real add does; see `automaticTitle`.
+    let isStream: Bool
     let hosts: [String]
 
     @ObservedObject private var settings = AppSettings.shared
@@ -387,8 +392,18 @@ private struct CaptureFolderPicker: View {
 
     /// "Automatic (Videos)": the folder a category would give this file by its
     /// current name, from the same call the real add makes.
+    ///
+    /// A stream is matched as if named `.mp4`, exactly as
+    /// `DownloadManager.addStreamDownload` does. Without that, the preview
+    /// saw an extensionless name, matched no category and promised the
+    /// default folder, while the real add then filed the video into Videos.
     private var automaticTitle: String {
-        let route = manager.categoryRoute(filename: filename, hosts: hosts, folderIsExplicit: false)
+        let route = manager.categoryRoute(
+            filename: filename,
+            matchName: isStream ? CategoryRouting.streamMatchName(for: filename) : nil,
+            hosts: hosts,
+            folderIsExplicit: false
+        )
         let target = (route?.category.folder ?? defaultFolder).standardizedFileURL
         return "Automatic (\(FileManager.default.displayName(atPath: target.path)))"
     }
