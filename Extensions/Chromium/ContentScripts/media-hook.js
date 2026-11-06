@@ -1,7 +1,7 @@
 // media-hook.js — Runs in the page's MAIN world at document_start.
 // Intercepts manifest network fetches (fetch/XHR), MediaSource creation (URL.createObjectURL),
 // and HTMLMediaElement src assignments to deterministically associate each <video> element
-// with its specific HLS/DASH stream group (data-mdl-group attribute).
+// with its specific HLS/DASH stream group or a proven direct-file source.
 (function () {
   'use strict';
 
@@ -128,30 +128,53 @@
   // <video>. Each hop is an object identity, so there is no timing or
   // proximity guessing anywhere in it.
   //
-  // Players that transmux before appending (HLS .ts segments) append a new
-  // buffer, so the identity is lost for them and those videos stay untagged.
-  // That is deliberate: no timing, length or position is ever used to guess.
+  // Players that move segments through a worker, or re-wrap them (HLS .ts into
+  // fMP4), append a different object, so identity alone is not enough. Their
+  // bytes still prove where they came from: see sourceOfAppendedBytes, which
+  // matches content, not objects. Either way the claim rests on evidence that
+  // these bytes derive from that source. No timing, order, position, length or
+  // site markup is ever used to guess, and when the evidence is missing or
+  // points at two sources the video is simply left untagged.
   const bufferSource = new WeakMap();        // ArrayBuffer -> URL it was fetched from
+  const blobSource = new WeakMap();          // Blob -> URL it was fetched from
   const sourceBufferOwner = new WeakMap();   // SourceBuffer -> MediaSource
   const mediaSourceVideo = new WeakMap();    // MediaSource -> <video>
   const blobUrlToMediaSource = new Map();    // blob: URL -> MediaSource, until assigned or revoked
+  const blobUrlToDirectSource = new Map();   // blob: URL -> direct file URL, until assigned or revoked
   // A blob URL is normally assigned to a <video> or revoked straight after it
   // is made. This only bounds the entries for a player that does neither, so
   // they cannot pile up (each one keeps a whole MediaSource alive).
   const MAX_PENDING_BLOB_URLS = 50;
 
+  // Videos whose current source has been proven (see attributeAppendedData),
+  // so later appends to them are not examined again. Cleared with the tag.
+  const provenVideos = new WeakSet();
+  // Direct-file URLs seen feeding each video's current source (see
+  // tagVideoDirectSource).
+  const directUrlsByVideo = new WeakMap();
+
   // Called as a blob: URL is assigned to a media element.
   function noteMediaSource(video, value) {
     if (typeof value !== 'string' || !value.startsWith('blob:')) return;
     const mediaSource = blobUrlToMediaSource.get(value);
-    if (!mediaSource) return;
-    blobUrlToMediaSource.delete(value);
-    mediaSourceVideo.set(mediaSource, video);
+    if (mediaSource) {
+      blobUrlToMediaSource.delete(value);
+      mediaSourceVideo.set(mediaSource, video);
+      return;
+    }
+    const directUrl = blobUrlToDirectSource.get(value);
+    if (!directUrl) return;
+    blobUrlToDirectSource.delete(value);
+    tagVideoDirectSource(video, directUrl);
   }
 
   function clearAssociation(video) {
     video.removeAttribute('data-mdl-group');
     video.removeAttribute('data-mdl-manifest');
+    video.removeAttribute('data-mdl-direct-url');
+    provenVideos.delete(video);
+    directUrlsByVideo.delete(video);
+    provScans.delete(video);
   }
 
   // A tag describes the source the element had when it was made. Players reuse
@@ -179,15 +202,175 @@
     return best;
   }
 
+  // A URL that was actually fetched into the exact ArrayBuffer appended to a
+  // video's SourceBuffer is a much better signal than a DOM selector or a
+  // site-specific state object.  Still, a streaming player can append many
+  // segment files; only promote conventional, complete media-file URLs, and
+  // reject the common segment naming schemes.  HLS/DASH stays on the manifest
+  // path above, which is the only reliable way to download a segmented stream.
+  function isLikelyDirectMediaFile(url) {
+    try {
+      const path = new URL(url, location.href).pathname.toLowerCase();
+      if (!/\.(mp4|m4v|webm|mov|ogv|ogg)$/.test(path)) return false;
+      return !/(?:^|[\/_-])(init|segment|chunk|fragment|part)[\/_-]?\d*(?:\.|$)/i.test(path);
+    } catch {
+      return false;
+    }
+  }
+
+  function tagVideoDirectSource(video, rawUrl) {
+    if (!video || !isLikelyDirectMediaFile(rawUrl)) return;
+    let url;
+    try { url = new URL(rawUrl, location.href).href; } catch { return; }
+    let seen = directUrlsByVideo.get(video);
+    if (!seen) directUrlsByVideo.set(video, seen = new Set());
+    seen.add(url);
+    // One file feeding the player is proof. Two different files are not: a
+    // player given separate video and audio files, or a segmented stream whose
+    // segments are named like files, would otherwise leave the tag on whichever
+    // arrived last, and the download would be one segment or one track. Which
+    // of them is "the video" would be a guess, so no claim is made.
+    if (seen.size > 1) {
+      video.removeAttribute('data-mdl-direct-url');
+      return;
+    }
+    if (video.getAttribute('data-mdl-direct-url') === url) return;
+    video.setAttribute('data-mdl-direct-url', url);
+    try {
+      window.dispatchEvent(new CustomEvent('__mdl_video_associated__', {
+        detail: { directUrl: url }
+      }));
+    } catch {}
+  }
+
+  // -- Proving where appended bytes came from, by content --------------------
+  // A player may fetch a segment on the main thread but append something that
+  // is not the same object: it handed the buffer to a worker, or re-wrapped the
+  // coded media (HLS .ts into fMP4). The coded bytes inside survive that. So a
+  // few short, high-entropy windows are sampled from every fetched segment and
+  // remembered with the URL; when bytes are appended to a SourceBuffer, they are
+  // searched for those windows. Finding several windows from one source is
+  // proof the data derives from it. Content-based, so it does not depend on any
+  // player library, container, site or URL scheme.
+  //
+  // Conservative on purpose: a window needs variety (no runs or padding), one
+  // seen in two different URLs is discarded, at least PROV_MIN_HITS windows
+  // must agree, and two competing sources means no answer at all.
+  const PROV_WINDOW = 24;               // bytes per window
+  const PROV_WINDOWS_PER_SEGMENT = 12;
+  const PROV_MIN_BYTES = 8192;          // smaller bodies are headers/init data
+  const PROV_MAX_BYTES = 40 * 1024 * 1024;
+  const PROV_MAX_SCAN_BYTES = 1500000;  // per appended chunk
+  const PROV_MAX_WINDOWS = 6000;
+  const PROV_MIN_HITS = 2;
+  // Content that can never match (decrypted by the player, or re-encoded) would
+  // otherwise be scanned on every append. Give each source a fixed budget.
+  const PROV_MAX_SCANS_PER_SOURCE = 30;
+  const provScans = new WeakMap();      // video -> scans spent on its current source
+  let provWindows = new Map();          // window (hex) -> URL, or null if two URLs had it
+  let provPrefilter = null;             // 3-byte prefix lookup so scanning stays cheap
+
+  function provPrefix(u8, i) {
+    return (u8[i] * 31 + u8[i + 1]) * 31 + u8[i + 2];
+  }
+
+  // Hex digits per byte value. Building keys is the hot path once many
+  // segments are indexed, so no per-byte toString(16) allocation.
+  const PROV_HEX = [];
+  for (let i = 0; i < 256; i++) PROV_HEX[i] = (i + 256).toString(16).slice(1);
+
+  function provHex(u8, offset) {
+    let s = '';
+    for (let i = 0; i < PROV_WINDOW; i++) s += PROV_HEX[u8[offset + i]];
+    return s;
+  }
+
+  function provHasVariety(u8, offset) {
+    const distinct = new Set();
+    for (let i = 0; i < PROV_WINDOW; i++) distinct.add(u8[offset + i]);
+    return distinct.size >= 10;
+  }
+
+  // Called with every fetched ArrayBuffer. Cheap: a dozen windows per segment.
+  function indexSegmentBytes(buffer, url) {
+    if (!(buffer instanceof ArrayBuffer) || typeof url !== 'string' || !url) return;
+    const n = buffer.byteLength;
+    if (n < PROV_MIN_BYTES || n > PROV_MAX_BYTES) return;
+    const u8 = new Uint8Array(buffer);
+    if (!provPrefilter) provPrefilter = new Uint8Array(1 << 18);
+    if (provWindows.size > PROV_MAX_WINDOWS) {
+      provWindows = new Map();
+      provPrefilter.fill(0);
+    }
+    // The middle of the body, away from headers, which look alike across
+    // segments and across videos.
+    const lo = Math.floor(n * 0.2);
+    const hi = n - PROV_WINDOW - 64;
+    for (let k = 0; k < PROV_WINDOWS_PER_SEGMENT; k++) {
+      let offset = lo + Math.floor((hi - lo) * (k / (PROV_WINDOWS_PER_SEGMENT - 1)));
+      for (let tries = 0; tries < 8 && offset < hi && !provHasVariety(u8, offset); tries++) offset += 7;
+      if (offset >= hi || !provHasVariety(u8, offset)) continue;
+      const key = provHex(u8, offset);
+      const known = provWindows.get(key);
+      if (known === undefined) provWindows.set(key, url);
+      else if (known !== url) provWindows.set(key, null);
+      provPrefilter[provPrefix(u8, offset)] = 1;
+    }
+  }
+
+  // The one source whose windows turn up in these appended bytes, or null.
+  // Sources are compared per manifest group, so every segment of one stream
+  // counts toward the same source.
+  function sourceOfAppendedBytes(view) {
+    if (!provPrefilter || view.length < PROV_MIN_BYTES) return null;
+    const end = Math.min(view.length - PROV_WINDOW, PROV_MAX_SCAN_BYTES);
+    const hits = new Map(); // owner -> { count, url }
+    for (let i = 0; i < end; i++) {
+      if (!provPrefilter[provPrefix(view, i)]) continue;
+      const url = provWindows.get(provHex(view, i));
+      if (!url) continue;
+      const manifest = manifestForSegment(url);
+      const owner = manifest ? manifest.groupKey : url;
+      const entry = hits.get(owner);
+      if (entry) entry.count++;
+      else hits.set(owner, { count: 1, url });
+    }
+    let winner = null;
+    for (const entry of hits.values()) {
+      if (entry.count < PROV_MIN_HITS) continue;
+      if (winner) return null; // two sources both have proof: ambiguous
+      winner = entry;
+    }
+    return winner ? winner.url : null;
+  }
+
   function attributeAppendedData(sourceBuffer, data) {
     const mediaSource = sourceBufferOwner.get(sourceBuffer);
     const video = mediaSource && mediaSourceVideo.get(mediaSource);
-    if (!video) return;
-    const buffer = ArrayBuffer.isView(data) ? data.buffer : data;
-    const url = buffer && bufferSource.get(buffer);
+    if (!video || provenVideos.has(video)) return;
+    const isView = ArrayBuffer.isView(data);
+    const buffer = isView ? data.buffer : data;
+    // 1. Same object that was fetched: free to check.
+    // 2. Otherwise the same bytes, wherever they were copied or re-wrapped.
+    let url = buffer && bufferSource.get(buffer);
+    if (!url) {
+      const view = isView ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+      if (view.length >= PROV_MIN_BYTES) {
+        const spent = provScans.get(video) || 0;
+        if (spent >= PROV_MAX_SCANS_PER_SOURCE) return;
+        provScans.set(video, spent + 1);
+        url = sourceOfAppendedBytes(view);
+      }
+    }
     if (!url) return;
     const manifest = manifestForSegment(url);
-    if (manifest) tagVideo(video, manifest.groupKey, manifest.url);
+    if (manifest) {
+      tagVideo(video, manifest.groupKey, manifest.url);
+      provenVideos.add(video);
+    } else {
+      // Not examined as proven: a second, different file would withdraw it.
+      tagVideoDirectSource(video, url);
+    }
   }
 
   function handleMediaSrc(video, srcVal) {
@@ -229,6 +412,14 @@
           if (blobUrlToMediaSource.size > MAX_PENDING_BLOB_URLS) {
             blobUrlToMediaSource.delete(blobUrlToMediaSource.keys().next().value);
           }
+        } else if (typeof Blob !== 'undefined' && obj instanceof Blob) {
+          const directUrl = blobSource.get(obj);
+          if (directUrl && isLikelyDirectMediaFile(directUrl)) {
+            blobUrlToDirectSource.set(blobUrl, directUrl);
+            if (blobUrlToDirectSource.size > MAX_PENDING_BLOB_URLS) {
+              blobUrlToDirectSource.delete(blobUrlToDirectSource.keys().next().value);
+            }
+          }
         }
       } catch {}
       return blobUrl;
@@ -249,8 +440,8 @@
         },
         set(val) {
           try {
-            noteMediaSource(this, val);
             resetAssociation(this, val);
+            noteMediaSource(this, val);
             handleMediaSrc(this, val);
           } catch {}
           return origSrcDesc.set.call(this, val);
@@ -295,8 +486,8 @@
     Element.prototype.setAttribute = function (name, value) {
       try {
         if (this instanceof HTMLMediaElement && typeof name === 'string' && name.toLowerCase() === 'src') {
-          noteMediaSource(this, value);
           resetAssociation(this, value);
+          noteMediaSource(this, value);
           handleMediaSrc(this, value);
         }
       } catch {}
@@ -371,8 +562,25 @@
       const promise = origArrayBuffer.apply(this, arguments);
       if (!url) return promise;
       return promise.then((buffer) => {
-        try { bufferSource.set(buffer, url); } catch {}
+        try { bufferSource.set(buffer, url); indexSegmentBytes(buffer, url); } catch {}
         return buffer;
+      });
+    };
+  }
+
+  // Some players fetch one complete file as Response.blob(), then assign its
+  // object URL directly to <video> rather than using MediaSource. Preserve
+  // that object identity too, so this direct-file path is as generic as the
+  // SourceBuffer path above.
+  if (typeof Response !== 'undefined' && Response.prototype.blob) {
+    const origBlob = Response.prototype.blob;
+    Response.prototype.blob = function () {
+      const url = this.url;
+      const promise = origBlob.apply(this, arguments);
+      if (!url) return promise;
+      return promise.then((blob) => {
+        try { blobSource.set(blob, url); } catch {}
+        return blob;
       });
     };
   }
@@ -385,7 +593,9 @@
           this.addEventListener('load', () => {
             try {
               if (this.response instanceof ArrayBuffer) {
-                bufferSource.set(this.response, this.__mdlUrl || this.responseURL);
+                const url = this.__mdlUrl || this.responseURL;
+                bufferSource.set(this.response, url);
+                indexSegmentBytes(this.response, url);
               }
             } catch {}
           });
@@ -415,7 +625,10 @@
   if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
     const origRevokeObjectURL = URL.revokeObjectURL;
     URL.revokeObjectURL = function (blobUrl) {
-      try { blobUrlToMediaSource.delete(blobUrl); } catch {}
+      try {
+        blobUrlToMediaSource.delete(blobUrl);
+        blobUrlToDirectSource.delete(blobUrl);
+      } catch {}
       return origRevokeObjectURL.apply(this, arguments);
     };
   }

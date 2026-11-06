@@ -1208,8 +1208,19 @@
       found.push({ url, label, unavailableReason: isBlob ? 'not directly downloadable' : null });
     };
 
+    // `media-hook.js` only sets this after observing this exact URL's bytes
+    // enter the SourceBuffer owned by this exact <video>.  It works equally
+    // for a blob-backed Pinterest card and any other player that fetches a
+    // complete MP4/WebM file into MediaSource, without parsing site markup.
+    const tracedDirectUrl = video.getAttribute('data-mdl-direct-url');
+    if (tracedDirectUrl) push(tracedDirectUrl, qualityLabel(tracedDirectUrl, null), false);
+
     if (video.currentSrc) {
-      push(video.currentSrc, qualityLabel(video.currentSrc, video), video.currentSrc.startsWith('blob:'));
+      // A blob only names browser-local data.  Once its byte provenance gave
+      // us a real file URL, don't retain the confusing disabled placeholder.
+      if (!(tracedDirectUrl && video.currentSrc.startsWith('blob:'))) {
+        push(video.currentSrc, qualityLabel(video.currentSrc, video), video.currentSrc.startsWith('blob:'));
+      }
     }
     video.querySelectorAll('source').forEach((s) => {
       if (s.src) push(s.src, qualityLabel(s.src, s), s.src.startsWith('blob:'));
