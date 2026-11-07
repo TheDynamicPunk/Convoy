@@ -916,10 +916,7 @@ private struct TemporaryStorageBanner: View {
     }
 
     private var formatted: String {
-        let f = ByteCountFormatter()
-        f.allowedUnits = [.useGB, .useMB]
-        f.countStyle = .file
-        return f.string(fromByteCount: bytes)
+        ByteFormat.size(bytes, in: [.gb, .mb])
     }
 }
 

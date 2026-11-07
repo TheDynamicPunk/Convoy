@@ -212,7 +212,7 @@ struct CaptureReviewView: View {
     @ViewBuilder
     private var sizeMetric: some View {
         if let size = model.size {
-            metric(ByteCountFormatter.string(fromByteCount: size, countStyle: .file), symbol: "internaldrive")
+            metric(ByteFormat.size(size), symbol: "internaldrive")
         } else if model.isProbing {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)

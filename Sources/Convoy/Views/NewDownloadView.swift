@@ -585,9 +585,9 @@ struct AddDownloadsView: View {
     private var previewSubtitle: String? {
         let size = youtubeOptions.first { $0.id == selectedFormatID }?.filesizeBytes
         switch (durationText, size) {
-        case let (.some(duration), .some(bytes)): return "\(duration) · \(formatBytes(bytes))"
+        case let (.some(duration), .some(bytes)): return "\(duration) · \(ByteFormat.size(bytes))"
         case let (.some(duration), .none): return duration
-        case let (.none, .some(bytes)): return formatBytes(bytes)
+        case let (.none, .some(bytes)): return ByteFormat.size(bytes)
         default: return nil
         }
     }
@@ -633,7 +633,7 @@ struct AddDownloadsView: View {
         // the row already sits under the "audio merged automatically"
         // section header, so trim it for a cleaner native menu row.
         let title = option.label.replacingOccurrences(of: " (+ audio)", with: "")
-        let sizeSuffix = option.filesizeBytes.map { " — \(formatBytes($0))" } ?? ""
+        let sizeSuffix = option.filesizeBytes.map { " — \(ByteFormat.size($0))" } ?? ""
         return Label(title + sizeSuffix, systemImage: icon)
     }
     
@@ -938,14 +938,6 @@ struct AddDownloadsView: View {
                 isFetchingFormats = false
             }
         }
-    }
-    
-    private func formatBytes(_ bytes: Int64) -> String {
-        let units = ["B", "KB", "MB", "GB"]
-        var size = Double(bytes)
-        var unit = 0
-        while size >= 1024 && unit < units.count - 1 { size /= 1024; unit += 1 }
-        return String(format: "%.1f %@", size, units[unit])
     }
     
     /// The short quality name to put in the saved filename — "1080p60",

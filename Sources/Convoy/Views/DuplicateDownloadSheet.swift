@@ -104,7 +104,7 @@ struct DuplicateDownloadSheet: View {
                 Spacer()
 
                 if existing.totalBytes > 0 {
-                    Text(formatBytes(existing.downloadedBytes) + " / " + formatBytes(existing.totalBytes))
+                    Text(ByteFormat.size(existing.downloadedBytes) + " / " + ByteFormat.size(existing.totalBytes))
                         .font(.system(size: 11).monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -307,15 +307,5 @@ struct DuplicateDownloadSheet: View {
 
     private func resolve(_ resolution: ConflictResolution) {
         Task { await downloadManager.resolveConflict(conflict, resolution: resolution) }
-    }
-
-    // MARK: - Formatting
-
-    private func formatBytes(_ bytes: Int64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB"]
-        var size = Double(bytes)
-        var unit = 0
-        while size >= 1024, unit < units.count - 1 { size /= 1024; unit += 1 }
-        return String(format: "%.1f %@", size, units[unit])
     }
 }

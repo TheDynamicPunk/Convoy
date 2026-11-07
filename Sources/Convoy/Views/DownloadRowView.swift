@@ -113,7 +113,7 @@ struct DownloadRowView: View {
                 } else if task.status == .completed {
                     HStack(spacing: 14) {
                         completedTimeMetric(task.endTime)
-                        metric(icon: "internaldrive", text: formatBytes(task.totalBytes))
+                        metric(icon: "internaldrive", text: ByteFormat.size(task.totalBytes))
                     }
                 } else if case .failed(let error) = task.status {
                     // Was .lineLimit(1) — YouTube's specific error messages
@@ -402,8 +402,8 @@ struct DownloadRowView: View {
     /// arrived. Everything else knows its total and keeps the familiar pair.
     private var sizeMetricText: String {
         task.hasUnknownTotalSize
-            ? formatBytes(task.downloadedBytes)
-            : "\(formatBytes(task.downloadedBytes)) / \(formatBytes(task.totalBytes))"
+            ? ByteFormat.size(task.downloadedBytes)
+            : "\(ByteFormat.size(task.downloadedBytes)) / \(ByteFormat.size(task.totalBytes))"
     }
 
     /// The segment count the percentage is computed from. Doubles as the
@@ -469,7 +469,7 @@ struct DownloadRowView: View {
     private func activeMetrics(showsTimeLeft: Bool, showsParts: Bool) -> some View {
         HStack(spacing: 10) {
             metric(icon: "internaldrive", text: sizeMetricText)
-            metric(icon: "gauge.with.dots.needle.67percent", text: formatSpeed(task.speed))
+            metric(icon: "gauge.with.dots.needle.67percent", text: ByteFormat.speed(task.speed))
             if showsTimeLeft, task.estimatedTimeRemaining > 0 {
                 metric(icon: "clock", text: formatTime(task.estimatedTimeRemaining) + " left")
             }
@@ -656,27 +656,8 @@ struct DownloadRowView: View {
     
     // MARK: - Formatting
     
-    private func formatBytes(_ bytes: Int64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB"]
-        var size = Double(bytes)
-        var unit = 0
-        while size >= 1024 && unit < units.count - 1 {
-            size /= 1024
-            unit += 1
-        }
-        return String(format: "%.1f %@", size, units[unit])
-    }
-    
-    private func formatSpeed(_ bytesPerSecond: Int64) -> String {
-        let units = ["B/s", "KB/s", "MB/s", "GB/s"]
-        var speed = Double(bytesPerSecond)
-        var unit = 0
-        while speed >= 1024 && unit < units.count - 1 {
-            speed /= 1024
-            unit += 1
-        }
-        return String(format: "%.1f %@", speed, units[unit])
-    }
+    // Sizes and speeds come from ByteFormat (DownloadEngine), shared with every
+    // other screen, so a figure reads the same wherever it appears.
     
     private func formatTime(_ seconds: TimeInterval) -> String {
         let hours = Int(seconds) / 3600

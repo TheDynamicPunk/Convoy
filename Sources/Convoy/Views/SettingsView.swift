@@ -420,7 +420,9 @@ private struct TemporaryFilesRow: View {
     }
 
     private var sizeText: String {
-        formatBytes(downloadManager.orphanedTemporaryBytes)
+        let bytes = downloadManager.orphanedTemporaryBytes
+        // GB or MB only, and MB alone at zero so nothing reads "0 GB".
+        return ByteFormat.size(bytes, in: bytes == 0 ? .mb : [.gb, .mb])
     }
 
     private func clear() async {
@@ -430,17 +432,6 @@ private struct TemporaryFilesRow: View {
         // quiet. Nothing has to be remembered about what just happened.
         await downloadManager.clearOrphanedTemporaryFiles()
         isClearing = false
-    }
-
-    private func formatBytes(_ bytes: Int64) -> String {
-        let f = ByteCountFormatter()
-        f.allowedUnits = bytes == 0 ? [.useMB] : [.useGB, .useMB]
-        f.countStyle = .file
-        // Off, or zero formats as the words "Zero KB" — which also ignores
-        // allowedUnits. The row is a figure that changes; it should read as
-        // one at every value, including nothing.
-        f.allowsNonnumericFormatting = false
-        return f.string(fromByteCount: bytes)
     }
 }
 

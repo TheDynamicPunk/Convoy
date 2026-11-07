@@ -304,7 +304,7 @@ private struct InstallOutput: View {
                              : progress.title)
                         Spacer()
                         if let expected = progress.expectedBytes {
-                            Text("\(Self.size(progress.receivedBytes)) of \(Self.size(expected))")
+                            Text("\(ByteFormat.size(progress.receivedBytes)) of \(ByteFormat.size(expected))")
                                 .monospacedDigit()
                         }
                     }
@@ -342,9 +342,5 @@ private struct InstallOutput: View {
             }
             .padding(.vertical, 2)
         }
-    }
-
-    private static func size(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }

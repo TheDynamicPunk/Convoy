@@ -131,8 +131,8 @@ struct RelinkHUDView: View {
         case .sameFile: sizeTag = nil
         }
 
-        let currentSize = task.totalBytes > 0 ? bytes(task.totalBytes) : "Size unknown"
-        let newSize = mismatch.capture.offeredSize.map(bytes) ?? "Size unknown"
+        let currentSize = task.totalBytes > 0 ? ByteFormat.size(task.totalBytes) : "Size unknown"
+        let newSize = mismatch.capture.offeredSize.map { ByteFormat.size($0) } ?? "Size unknown"
 
         return VStack(alignment: .leading, spacing: 10) {
             detail(title: "Current download", name: task.filename, nameTag: nil, size: currentSize, sizeTag: nil)
@@ -177,7 +177,7 @@ struct RelinkHUDView: View {
     /// Leads with what differs. The sizes themselves are in the comparison
     /// above, so this only says what it means and what re-linking costs.
     private func explanation(for mismatch: RelinkMismatch, names: RelinkNameVerdict) -> String {
-        let discarded = "Re-linking uses the new link and starts again from the beginning, discarding the \(bytes(task.downloadedBytes)) already downloaded."
+        let discarded = "Re-linking uses the new link and starts again from the beginning, discarding the \(ByteFormat.size(task.downloadedBytes)) already downloaded."
         let what: String
         switch (mismatch.verdict, names) {
         case (.differentSize, .different):
@@ -229,25 +229,10 @@ struct RelinkHUDView: View {
         if let host = task.url.host { parts.append(host) }
         if task.totalBytes > 0 {
             let percent = Int((Double(task.downloadedBytes) / Double(task.totalBytes) * 100).rounded())
-            parts.append("\(bytes(task.downloadedBytes)) of \(bytes(task.totalBytes)) (\(percent)%)")
+            parts.append("\(ByteFormat.size(task.downloadedBytes)) of \(ByteFormat.size(task.totalBytes)) (\(percent)%)")
         } else {
-            parts.append("\(bytes(task.downloadedBytes)) downloaded")
+            parts.append("\(ByteFormat.size(task.downloadedBytes)) downloaded")
         }
         return parts.joined(separator: " · ")
-    }
-
-    /// Same units and rounding as the download row (`DownloadRowView`) and the
-    /// delete sheet: 1024-based, one decimal. Deliberately not
-    /// `ByteCountFormatter(.file)`, which counts in 1000s, so the same file
-    /// would read differently here than on the row it came from.
-    private func bytes(_ count: Int64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB"]
-        var size = Double(count)
-        var unit = 0
-        while size >= 1024 && unit < units.count - 1 {
-            size /= 1024
-            unit += 1
-        }
-        return String(format: "%.1f %@", size, units[unit])
     }
 }

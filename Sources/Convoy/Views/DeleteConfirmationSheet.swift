@@ -184,7 +184,7 @@ struct DeleteConfirmationSheet: View {
             return ["This removes it from your downloads list. The file is already gone from where it was saved."]
         case .discardsProgress(let bytes):
             if item.isFailed {
-                return ["Delete this download and discard the \(formatBytes(bytes)) already downloaded?"]
+                return ["Delete this download and discard the \(ByteFormat.size(bytes)) already downloaded?"]
             }
             return ["This download hasn't finished — its progress will be lost."]
         case .nothingToLose:
@@ -198,7 +198,7 @@ struct DeleteConfirmationSheet: View {
 
         let unfinished = plan.progressDiscardingCount
         if unfinished > 0 {
-            let bytes = formatBytes(plan.progressDiscardingBytes)
+            let bytes = ByteFormat.size(plan.progressDiscardingBytes)
             let noun = unfinished == 1 ? "download" : "downloads"
             lines.append("This will discard \(bytes) already downloaded across \(unfinished) unfinished \(noun).")
         }
@@ -221,22 +221,11 @@ struct DeleteConfirmationSheet: View {
     }
 
     private var trashToggleLabel: String {
-        let bytes = formatBytes(plan.trashableBytes)
+        let bytes = ByteFormat.size(plan.trashableBytes)
         if plan.single != nil {
             return "Move file to Trash (\(bytes))"
         }
         let noun = plan.trashableCount == 1 ? "finished file" : "finished files"
         return "Move \(plan.trashableCount) \(noun) to Trash (\(bytes))"
-    }
-
-    private func formatBytes(_ bytes: Int64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB"]
-        var size = Double(bytes)
-        var unit = 0
-        while size >= 1024 && unit < units.count - 1 {
-            size /= 1024
-            unit += 1
-        }
-        return String(format: "%.1f %@", size, units[unit])
     }
 }

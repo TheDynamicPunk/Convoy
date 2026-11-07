@@ -18,7 +18,7 @@ public enum SegmentMergeError: LocalizedError {
         case .sizeMismatch(let expected, let actual):
             return "Couldn't put this download together: it came to \(actual) bytes, not the expected \(expected)."
         case .notEnoughSpace(let needed):
-            let short = ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)
+            let short = ByteFormat.size(needed)
             return "Not enough space to finish this download — it needs \(short) more."
         case .cannotWrite(let url):
             return "Could not write to \(url.deletingLastPathComponent().path)."
