@@ -575,18 +575,17 @@ struct DownloadRowView: View {
                 }
                 .help("Retry download")
             } else if case .urlExpired = task.status {
-                // Re-link: open the page that originally triggered the download
-                // so the user can let the browser recapture a fresh URL.
-                // Disabled if no referrer was captured (e.g. manually added URLs).
+                // Re-link: opens the source page (if one was captured) and the
+                // re-link window, which waits for the download to be captured
+                // again and checks it is the same file (RelinkCoordinator).
+                // Enabled without a source page too: the person can find the
+                // download themselves and capture it from wherever it is.
                 RowIconButton(icon: "link.badge.plus", tint: .orange) {
-                    if let ref = task.referrerURL {
-                        NSWorkspace.shared.open(ref)
-                    }
+                    RelinkCoordinator.shared.begin(for: task)
                 }
-                .disabled(task.referrerURL == nil)
                 .help(task.referrerURL == nil
-                      ? "No source page was captured for this download"
-                      : "Open source page to get a fresh link")
+                      ? "Re-link: capture this download again in your browser to get a fresh link"
+                      : "Re-link: open the source page and capture the download again")
             } else if case .destinationMissing = task.status {
                 RowIconButton(icon: "folder.badge.plus", tint: .orange) {
                     chooseNewFolder()
@@ -626,6 +625,8 @@ struct DownloadRowView: View {
             Button("Restart from Beginning") {
                 Task { try? await downloadManager.retryFailed(task, fromScratch: true) }
             }
+        } else if case .urlExpired = task.status {
+            Button("Re-link…") { RelinkCoordinator.shared.begin(for: task) }
         } else if case .destinationMissing = task.status {
             Button("Choose New Folder…") { chooseNewFolder() }
             Button("Recreate Original Folder") {

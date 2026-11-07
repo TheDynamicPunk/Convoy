@@ -60,6 +60,12 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func route(_ capture: CapturedDownload, reviewing: Bool) async {
+        // A re-link in progress (the person tapped Re-link and is capturing
+        // the download again) takes the capture before anything else: it is
+        // checked against the expired download rather than added or reviewed.
+        // Streams never re-link.
+        if capture.stream == nil, RelinkCoordinator.shared.offer(capture) { return }
+
         // Direct mode plays the animation straight away, as it always did.
         if !reviewing { FlyingCaptureAnimation.shared.play(filename: capture.displayName) }
 
@@ -80,6 +86,18 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
             enqueue(capture)
         } else {
             await DownloadManager.shared.addCaptured(capture)
+        }
+    }
+
+    /// A capture the re-link window handed back because the person said it is
+    /// a different download. It joins the list like any other capture, without
+    /// another re-link check.
+    func addAsNew(_ capture: CapturedDownload) {
+        if AppSettings.shared.confirmCapturedDownloads {
+            enqueue(capture)
+        } else {
+            FlyingCaptureAnimation.shared.play(filename: capture.displayName)
+            Task { await DownloadManager.shared.addCaptured(capture) }
         }
     }
 

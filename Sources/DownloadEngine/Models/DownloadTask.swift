@@ -2009,6 +2009,30 @@ public final class DownloadTask: ObservableObject, Identifiable {
         status = .waiting
     }
     
+    /// After a confirmed Re-link & Restart whose capture arrived under a
+    /// different name: the row becomes that file, so its name follows.
+    ///
+    /// Must run after `discardProgressForFreshRestart()`, which cleans up
+    /// beside the OLD destination. Safe to move the destination at all because
+    /// a restart leaves nothing on disk for this download; the only bytes are
+    /// about to be written to the temp directory by the fresh probe.
+    ///
+    /// `originalName` moves with it: it is this download's identity for
+    /// duplicate detection, and the identity is now the new file's. A name the
+    /// person typed (`.userProvided`) is never replaced, the same rule as
+    /// everywhere else a name can change: their choice outranks any suggestion.
+    func adoptNameAfterRestart(_ name: String, source: FilenameSource) {
+        guard filenameSource != .userProvided,
+              let safe = FilenameResolver.sanitize(name) else { return }
+        let folder = destinationURL.deletingLastPathComponent()
+        destinationURL = DownloadManager.shared.deduplicatedDestination(
+            for: folder.appendingPathComponent(safe),
+            excluding: id
+        )
+        originalName = safe
+        filenameSource = source
+    }
+
     /// Called by DownloadManager.matchFreshURL when the browser captures a
     /// new URL that matches this expired task (same filename + same size).
     /// Swaps in the fresh URL, clears the expired status back to .paused,
