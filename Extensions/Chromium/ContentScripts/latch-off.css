@@ -1,4 +1,5 @@
-/* Master switch off in the popup: hide the video latch. See video-latch.js. */
+/* Either popup switch off (master capture, or "Show download button"): hide
+   the video latch. See applyLatchPrefs in video-latch.js. */
 html[data-mdl-off] [data-mdl-latch] {
   display: none !important;
 }

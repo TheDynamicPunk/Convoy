@@ -8,6 +8,7 @@ const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const openBtn = document.getElementById('openBtn');
 const cookieToggle = document.getElementById('cookieToggle');
+const videoButtonToggle = document.getElementById('videoButtonToggle');
 
 // ── Master switch ──────────────────────────────────────────────────────────
 // Read by background.js (download capture, shortcut) and video-latch.js
@@ -26,6 +27,19 @@ chrome.storage.local.get('captureEnabled', ({ captureEnabled }) => {
 captureToggle.addEventListener('change', () => {
   chrome.storage.local.set({ captureEnabled: captureToggle.checked });
   showCapture(captureToggle.checked);
+});
+
+// ── Video button ───────────────────────────────────────────────────────────
+// Hides only the on-page "Download video" pill. Capturing downloads, the
+// shortcut and the context menu are unaffected. Read by video-latch.js, which
+// applies it live to open tabs. Absent means on.
+
+chrome.storage.local.get('showVideoButton', ({ showVideoButton }) => {
+  videoButtonToggle.checked = showVideoButton !== false;
+});
+
+videoButtonToggle.addEventListener('change', () => {
+  chrome.storage.local.set({ showVideoButton: videoButtonToggle.checked });
 });
 
 // ── App status ─────────────────────────────────────────────────────────────

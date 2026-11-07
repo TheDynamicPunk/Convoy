@@ -22,16 +22,22 @@
   // itself into a one-click reload control.
   const STALE_ATTR = 'data-mdl-stale';
 
-  // The popup's master switch. latch-off.css hides every [data-mdl-latch]
-  // while <html> carries data-mdl-off — a manifest stylesheet, so a page's
-  // CSP can't block it, and flipping the switch applies to open tabs live.
-  function applyCaptureEnabled(enabled) {
-    document.documentElement.toggleAttribute('data-mdl-off', enabled === false);
+  // The popup's two pill switches: the master switch (captureEnabled) and the
+  // button-only one (showVideoButton). Either one off hides the pill.
+  // latch-off.css hides every [data-mdl-latch] while <html> carries
+  // data-mdl-off — a manifest stylesheet, so a page's CSP can't block it, and
+  // flipping a switch applies to open tabs live. Absent keys mean on.
+  const LATCH_PREF_KEYS = ['captureEnabled', 'showVideoButton'];
+  function applyLatchPrefs(prefs) {
+    const hidden = LATCH_PREF_KEYS.some((key) => prefs?.[key] === false);
+    document.documentElement.toggleAttribute('data-mdl-off', hidden);
   }
   try {
-    chrome.storage.local.get('captureEnabled', (r) => applyCaptureEnabled(r?.captureEnabled));
+    chrome.storage.local.get(LATCH_PREF_KEYS, applyLatchPrefs);
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.captureEnabled) applyCaptureEnabled(changes.captureEnabled.newValue);
+      if (area === 'local' && LATCH_PREF_KEYS.some((key) => key in changes)) {
+        chrome.storage.local.get(LATCH_PREF_KEYS, applyLatchPrefs);
+      }
     });
   } catch (_) {}
   const flashTimers = new WeakMap();
