@@ -199,7 +199,7 @@ final class IPCServer {
                 // Every request through this endpoint is a genuine capture
                 // (extension button, context menu, or an intercepted native
                 // browser download). What a capture does to the window —
-                // bringWindowToFrontOnCapture, or the review window coming
+                // bringWindowToFrontOnCapture, or the capture dialog coming
                 // forward by itself — is CaptureCoordinator's decision, made
                 // once for every capture route; see its handle(_:).
                 let referrerURL = (dict["referrer"] as? String).flatMap { URL(string: $0) }
@@ -230,7 +230,7 @@ final class IPCServer {
 
                 // File size measured by the extension, if any. Read from
                 // rawHeaders because mergedHeaders dropped it; used for
-                // duplicate detection and shown up front in the review window.
+                // duplicate detection and shown up front in the capture dialog.
                 let expectedSize: Int64? = (rawHeaders["Content-Length"] ?? rawHeaders["content-length"]).flatMap { Int64($0) }
                 let explicitSegments = dict["segmentCount"] as? Int
 

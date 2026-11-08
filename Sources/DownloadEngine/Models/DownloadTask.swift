@@ -180,27 +180,13 @@ public final class DownloadTask: ObservableObject, Identifiable {
     
     public var endTime: Date? { _endTime }
     
-    public var category: String {
-        // Was url.pathExtension — fine for a plain HTTP download where url
-        // and destinationURL share an extension, but wrong for YouTube: url
-        // is the watch page ("/watch", no extension at all), so every check
-        // below fell through to "Other" and the row showed a generic doc
-        // icon regardless of whether the download was actually a video.
-        // destinationURL is the real output file in every case (direct
-        // downloads, Content-Disposition-renamed files, and yt-dlp's actual
-        // produced media file alike) so it's the correct source of truth
-        // here, not just a YouTube-specific patch.
-        let ext = destinationURL.pathExtension.lowercased()
-        let videoExts = ["mp4", "mov", "avi", "mkv", "webm", "flv", "m4v", "mpg", "mpeg"]
-        let audioExts = ["mp3", "wav", "flac", "aac", "m4a", "ogg", "opus", "wma"]
-        let docExts = ["pdf", "doc", "docx", "txt", "rtf", "pages", "odt", "xls", "xlsx", "ppt", "pptx"]
-        let archiveExts = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "dmg", "pkg", "iso"]
-        
-        if videoExts.contains(ext) { return "Video" }
-        if audioExts.contains(ext) { return "Audio" }
-        if docExts.contains(ext) { return "Documents" }
-        if archiveExts.contains(ext) { return "Archives" }
-        return "Other"
+    /// What kind of file this is, for its icon. Read from destinationURL, not
+    /// url: for YouTube, url is the watch page ("/watch", no extension), while
+    /// destinationURL is the real output file in every case (direct downloads,
+    /// Content-Disposition-renamed files, and yt-dlp's actual produced media
+    /// file alike). The classification itself lives in `FileKind`.
+    public var fileKind: FileKind {
+        FileKind(filename: destinationURL.lastPathComponent)
     }
     
     private var _segments: [DownloadSegment] = [] {

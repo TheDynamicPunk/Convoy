@@ -128,8 +128,8 @@ public final class DownloadManager: ObservableObject {
         // against. See DownloadTask.originalName's doc comment.
         let originalName = dest.lastPathComponent
         let segments = segmentCount ?? settings.defaultSegmentCount
-        // startAutomatically is the person's answer in the capture review
-        // window (Start vs Download Later); nil everywhere else, which leaves
+        // startAutomatically is the person's answer in the capture dialog
+        // (Start vs Download Later); nil everywhere else, which leaves
         // it to the Settings switch exactly as before.
         let startsAutomatically = startAutomatically ?? settings.autoStartDownloads
 
@@ -1623,7 +1623,7 @@ public struct DuplicateDownloadConflict: Identifiable {
     /// the same standing; without it a folder the person chose would quietly
     /// become a suggestion that a category could then move.
     public let incomingFolderIsExplicit: Bool
-    /// The Start / Download Later answer from the capture review window, kept
+    /// The Start / Download Later answer from the capture dialog, kept
     /// so a duplicate prompt that follows it does not lose it: "Save as
     /// separate" must still honour "Download Later". Nil when the request had
     /// no such answer, which leaves it to Settings as always.

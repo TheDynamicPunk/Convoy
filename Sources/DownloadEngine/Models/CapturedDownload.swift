@@ -5,7 +5,7 @@ import Foundation
 /// stream — and has not become a task yet.
 ///
 /// Exists so that "what did the browser ask for" is one value that can wait
-/// for a person's answer (the capture review window) and then be added by the
+/// for a person's answer (the capture dialog) and then be added by the
 /// same code whether or not anyone was asked. Before this, IPCServer built the
 /// add calls inline, so there was no way to hold a request.
 public struct CapturedDownload: Identifiable {
@@ -62,7 +62,7 @@ public struct CapturedDownload: Identifiable {
     }
 }
 
-/// What a person decided in the capture review window. Every field is
+/// What a person decided in the capture dialog. Every field is
 /// optional: nil means "leave it as the capture arrived".
 public struct CaptureChoices {
     /// A name the person typed. Nil if they left the suggested one alone —
@@ -87,7 +87,7 @@ extension DownloadManager {
     /// Adds a captured download, applying whatever the person chose for it.
     ///
     /// With default `choices` this does exactly what IPCServer used to do
-    /// inline for a capture, so the review window being switched off changes
+    /// inline for a capture, so the dialog being switched off changes
     /// nothing. Re-link matching (`matchFreshURL`) is NOT done here: the
     /// caller does it first, because a capture that re-links an expired row
     /// is not a new download and must not be shown to anyone as one.

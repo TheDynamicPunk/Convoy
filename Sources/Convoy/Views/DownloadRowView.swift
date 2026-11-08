@@ -49,7 +49,7 @@ struct DownloadRowView: View {
     
     var body: some View {
         HStack(alignment: .center, spacing: Self.iconSpacing) {
-            categoryIcon
+            fileKindIcon
             
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
@@ -256,15 +256,15 @@ struct DownloadRowView: View {
     // MARK: - Icon
     
     @ViewBuilder
-    private var categoryIcon: some View {
+    private var fileKindIcon: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 10)
-                .fill((fileMissing ? Color.gray : categoryColor).opacity(0.15))
+                .fill((fileMissing ? Color.gray : task.fileKind.tint).opacity(0.15))
                 .frame(width: Self.iconSize, height: Self.iconSize)
             
-            Image(systemName: fileMissing ? "questionmark.folder" : categoryIconName)
+            Image(systemName: fileMissing ? "questionmark.folder" : task.fileKind.symbol)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(fileMissing ? Color.gray : categoryColor)
+                .foregroundStyle(fileMissing ? Color.gray : task.fileKind.tint)
         }
         .overlay(alignment: .topLeading) {
             if isHovering || isSelected || isSelectionModeActive {
@@ -292,26 +292,6 @@ struct DownloadRowView: View {
                     .background(Circle().fill(statusColor))
                     .offset(x: 4, y: 4)
             }
-        }
-    }
-    
-    private var categoryIconName: String {
-        switch task.category {
-        case "Video": return "film"
-        case "Audio": return "waveform"
-        case "Documents": return "doc.text"
-        case "Archives": return "archivebox"
-        default: return "doc"
-        }
-    }
-    
-    private var categoryColor: Color {
-        switch task.category {
-        case "Video": return .purple
-        case "Audio": return .pink
-        case "Documents": return .blue
-        case "Archives": return .orange
-        default: return .gray
         }
     }
     

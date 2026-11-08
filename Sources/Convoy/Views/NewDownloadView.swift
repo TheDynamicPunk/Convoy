@@ -26,7 +26,7 @@ private enum FolderChoice: Hashable {
 /// The last few folders downloads were saved to, newest first. Kept in
 /// UserDefaults like the other settings; folders that no longer exist drop
 /// out when read. Shared by this window and the capture dialog
-/// (CaptureReviewView), so both offer the same "Recent" list.
+/// (CaptureDialogView), so both offer the same "Recent" list.
 enum RecentDownloadFolders {
     private static let key = "recentDownloadFolders"
     private static let limit = 3

@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import DownloadEngine
 
-/// State for one capture's review window.
+/// State for one capture's dialog.
 ///
 /// The window asks no questions the capture can already answer: Chrome hands
 /// over a size and a name for a download the person clicked, so those show at
@@ -10,7 +10,7 @@ import DownloadEngine
 /// (a right-clicked link, say) triggers a probe, and the probe only ever fills
 /// in what is missing; it never overwrites something the person typed.
 @MainActor
-final class CaptureReviewModel: ObservableObject {
+final class CaptureDialogModel: ObservableObject {
     let capture: CapturedDownload
 
     /// What the name field shows.
@@ -71,23 +71,23 @@ final class CaptureReviewModel: ObservableObject {
     }
 }
 
-/// The capture review window's content, laid out like the download rows it is
+/// The capture dialog's content, laid out like the download rows it is
 /// about to become: the type icon, a semibold title, a line of metrics; then
 /// the two things worth deciding, the name and the folder, at one width.
-struct CaptureReviewView: View {
+struct CaptureDialogView: View {
     let capture: CapturedDownload
     let waitingCount: Int
     let onDecision: (CaptureDecision) -> Void
 
     @ObservedObject private var settings = AppSettings.shared
-    @StateObject private var model: CaptureReviewModel
+    @StateObject private var model: CaptureDialogModel
     @FocusState private var nameFocused: Bool
 
     init(capture: CapturedDownload, waitingCount: Int, onDecision: @escaping (CaptureDecision) -> Void) {
         self.capture = capture
         self.waitingCount = waitingCount
         self.onDecision = onDecision
-        _model = StateObject(wrappedValue: CaptureReviewModel(capture: capture))
+        _model = StateObject(wrappedValue: CaptureDialogModel(capture: capture))
     }
 
     var body: some View {
@@ -177,31 +177,18 @@ struct CaptureReviewView: View {
     }
 
     /// The download rows' type icon: a tinted rounded square with a symbol.
+    /// A stream is always video; anything else is judged by its file name,
+    /// by the same `FileKind` the rows use.
     private var typeIcon: some View {
-        let style = Self.typeStyle(forName: model.filename, isStream: capture.stream != nil)
+        let kind: FileKind = capture.stream != nil ? .video : FileKind(filename: model.filename)
         return ZStack {
             RoundedRectangle(cornerRadius: 10)
-                .fill(style.color.opacity(0.15))
+                .fill(kind.tint.opacity(0.15))
                 .frame(width: 40, height: 40)
-            Image(systemName: style.symbol)
+            Image(systemName: kind.symbol)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(style.color)
+                .foregroundStyle(kind.tint)
         }
-    }
-
-    private static func typeStyle(forName name: String, isStream: Bool) -> (symbol: String, color: Color) {
-        if isStream { return ("film", .purple) }
-        let ext = (name as NSString).pathExtension
-        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else { return ("doc", .gray) }
-        if type.conforms(to: .movie) || type.conforms(to: .video) { return ("film", .purple) }
-        if type.conforms(to: .audio) { return ("waveform", .pink) }
-        if type.conforms(to: .image) { return ("photo", .green) }
-        if type.conforms(to: .archive) || type.conforms(to: .diskImage) { return ("archivebox", .orange) }
-        if type.conforms(to: .pdf) || type.conforms(to: .text)
-            || type.conforms(to: .presentation) || type.conforms(to: .spreadsheet) {
-            return ("doc.text", .blue)
-        }
-        return ("doc", .gray)
     }
 
     /// Where it came from: the page the person was on, else the file's host.
@@ -430,7 +417,7 @@ private struct CaptureFolderPicker: View {
     }
 
     private func chooseOther() {
-        // The review window never activates Convoy, but an open panel needs
+        // The capture dialog never activates Convoy, but an open panel needs
         // the app active to be reliably in front. The person has just
         // clicked in this app, which is when macOS honours the request.
         NSApp.activate()

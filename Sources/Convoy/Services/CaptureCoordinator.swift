@@ -3,7 +3,7 @@ import SwiftUI
 import DownloadEngine
 import os
 
-private let captureLogger = Logger(subsystem: "Convoy", category: "CaptureReview")
+private let captureLogger = Logger(subsystem: "Convoy", category: "CaptureDialog")
 
 /// What the person decided about a captured download.
 enum CaptureDecision {
@@ -35,7 +35,7 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var waitingCount = 0
 
     private var queue: [CapturedDownload] = []
-    private var panel: CaptureReviewPanel?
+    private var panel: CaptureDialogPanel?
 
     private override init() { super.init() }
 
@@ -44,45 +44,45 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
     /// Called by IPCServer for every capture request, on the main actor.
     func handle(_ captures: [CapturedDownload]) {
         let settings = AppSettings.shared
-        let reviewing = settings.confirmCapturedDownloads
+        let confirming = settings.confirmCapturedDownloads
 
         // The original behaviour, unchanged: silent captures may bring the
-        // main window forward. When reviewing, the review window is what
+        // main window forward. When confirming, the capture dialog is what
         // comes forward instead, and raising the main window as well would
-        // race the Dock-icon policy when the review window closes.
-        if !reviewing, settings.bringWindowToFrontOnCapture {
+        // race the Dock-icon policy when the dialog closes.
+        if !confirming, settings.bringWindowToFrontOnCapture {
             MainWindowTracker.shared.showMainWindow()
         }
 
         for capture in captures {
-            Task { await route(capture, reviewing: reviewing) }
+            Task { await route(capture, confirming: confirming) }
         }
     }
 
-    private func route(_ capture: CapturedDownload, reviewing: Bool) async {
+    private func route(_ capture: CapturedDownload, confirming: Bool) async {
         // A re-link in progress (the person tapped Re-link and is capturing
         // the download again) takes the capture before anything else: it is
-        // checked against the expired download rather than added or reviewed.
+        // checked against the expired download rather than added or confirmed.
         // Streams never re-link.
         if capture.stream == nil, RelinkCoordinator.shared.offer(capture) { return }
 
         // Direct mode plays the animation straight away, as it always did.
-        if !reviewing { FlyingCaptureAnimation.shared.play(filename: capture.displayName) }
+        if !confirming { FlyingCaptureAnimation.shared.play(filename: capture.displayName) }
 
         // A capture that re-links an expired row is not a new download, so
-        // there is nothing to review: it picks up the old one where it
+        // there is nothing to confirm: it picks up the old one where it
         // stopped. Streams never re-link.
         if capture.stream == nil,
            await DownloadManager.shared.matchFreshURL(capture.url, headers: capture.matchHeaders) {
-            if reviewing {
+            if confirming {
                 // No window raise here: that option is greyed out in Settings
-                // while review is on, so honouring it would contradict that.
+                // while the dialog is on, so honouring it would contradict that.
                 FlyingCaptureAnimation.shared.play(filename: capture.displayName)
             }
             return
         }
 
-        if reviewing {
+        if confirming {
             enqueue(capture)
         } else {
             await DownloadManager.shared.addCaptured(capture)
@@ -122,7 +122,7 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
 
         switch decision {
         case .cancel:
-            captureLogger.notice("capture cancelled in review")
+            captureLogger.notice("capture cancelled in dialog")
         case .start(var choices):
             choices.startsAutomatically = true
             commit(capture, choices)
@@ -192,23 +192,23 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
 
     private func ensureVisible() {
         guard current != nil, let panel, !panel.occlusionState.contains(.visible) else { return }
-        captureLogger.notice("review panel not visible after showing; activating Convoy")
+        captureLogger.notice("capture dialog not visible after showing; activating Convoy")
         DockIconPolicy.showElevatedIfHidden {
             panel.orderFrontRegardless()
             AppActivation.activate(from: NSWorkspace.shared.frontmostApplication)
         }
     }
 
-    private func makePanel() -> CaptureReviewPanel {
+    private func makePanel() -> CaptureDialogPanel {
         // A standard titled panel with its normal opaque background, so
         // AppKit draws it correctly in light and dark; only the close button
         // is kept, as minimise and zoom make no sense on a prompt.
         // Non-activating, like Spotlight's or Alfred's window: it can take
-        // keystrokes (see CaptureReviewPanel) without making Convoy the
+        // keystrokes (see CaptureDialogPanel) without making Convoy the
         // active app, so it appears over whatever the person is doing,
         // full-screen browser included, and leaves them in that app when it
         // closes.
-        let panel = CaptureReviewPanel(
+        let panel = CaptureDialogPanel(
             contentRect: NSRect(x: 0, y: 0, width: 440, height: 240),
             styleMask: [.titled, .closable, .nonactivatingPanel],
             backing: .buffered,
@@ -230,7 +230,7 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self
 
-        let host = NSHostingController(rootView: CaptureReviewRoot(coordinator: self))
+        let host = NSHostingController(rootView: CaptureDialogRoot(coordinator: self))
         panel.contentViewController = host
         // Nothing starts focused. Left to AppKit, the name field takes first
         // focus when the panel becomes key and opens with its text selected,
@@ -284,21 +284,21 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
 
 /// A floating panel that can take key focus, so the name field is editable
 /// and Return / Escape work.
-final class CaptureReviewPanel: NSPanel {
+final class CaptureDialogPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
-/// The panel's content: the current capture's review view, rebuilt (via `id`)
+/// The panel's content: the current capture's dialog view, rebuilt (via `id`)
 /// for each capture so no state leaks from one to the next.
-private struct CaptureReviewRoot: View {
+private struct CaptureDialogRoot: View {
     @ObservedObject var coordinator: CaptureCoordinator
     @ObservedObject private var settings = AppSettings.shared
 
     var body: some View {
         Group {
             if let capture = coordinator.current {
-                CaptureReviewView(
+                CaptureDialogView(
                     capture: capture,
                     waitingCount: coordinator.waitingCount,
                     onDecision: { decision in coordinator.resolve(capture, decision) }
