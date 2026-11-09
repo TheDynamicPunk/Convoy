@@ -1,5 +1,5 @@
 // media-hook.js — Runs in the page's MAIN world at document_start.
-// Intercepts manifest network fetches (fetch/XHR), MediaSource creation (URL.createObjectURL),
+// Observes manifest fetches (PerformanceObserver), intercepts XHR, MediaSource creation (URL.createObjectURL),
 // and HTMLMediaElement src assignments to deterministically associate each <video> element
 // with its specific HLS/DASH stream group or a proven direct-file source.
 (function () {
@@ -495,21 +495,23 @@
     };
   }
 
-  // ── 4. Intercept window.fetch ───────────────────────────────────────────────
-  if (typeof window.fetch === 'function') {
-    const origFetch = window.fetch;
-    window.fetch = function (input, init) {
-      try {
-        let url = null;
-        if (typeof input === 'string') url = input;
-        else if (input instanceof URL) url = input.href;
-        else if (input && typeof input.url === 'string') url = input.url;
-        if (url && isManifestUrl(url)) {
-          recordManifest(url);
+  // ── 4. Observe fetch() manifest requests ────────────────────────────────────
+  // Deliberately NOT a wrapper around window.fetch. This script runs in the
+  // fetch the page makes, and Chrome then files the page's own failures (blocked
+  // analytics calls, Cloudflare's data: probe, preload warnings) in this
+  // extension's Errors list. A PerformanceObserver is told about each completed
+  // fetch afterwards and never sits in the page's call stack. The manifest is
+  // recorded when its response finishes rather than when it is requested, which
+  // is still before any of its segments can be fetched or appended.
+  if (typeof PerformanceObserver === 'function') {
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.initiatorType !== 'fetch') continue;
+          try { recordManifest(entry.name); } catch {}
         }
-      } catch {}
-      return origFetch.apply(this, arguments);
-    };
+      }).observe({ type: 'resource', buffered: true });
+    } catch {}
   }
 
   // ── 5. Intercept XMLHttpRequest.prototype.open ─────────────────────────────
