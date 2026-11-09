@@ -113,7 +113,7 @@ struct DownloadRowView: View {
                 } else if task.status == .completed {
                     HStack(spacing: 14) {
                         completedTimeMetric(task.endTime)
-                        metric(icon: "internaldrive", text: ByteFormat.size(task.totalBytes))
+                        metric(icon: "internaldrive", text: ByteFormat.size(task.totalBytes, digits: .fixed))
                     }
                 } else if case .failed(let error) = task.status {
                     // Was .lineLimit(1) — YouTube's specific error messages
@@ -380,10 +380,11 @@ struct DownloadRowView: View {
     
     /// A stream cannot know its finished size, so it reports only what has
     /// arrived. Everything else knows its total and keeps the familiar pair.
+    /// Uses `.fixed` digits so the text never changes length while it updates.
     private var sizeMetricText: String {
         task.hasUnknownTotalSize
-            ? ByteFormat.size(task.downloadedBytes)
-            : "\(ByteFormat.size(task.downloadedBytes)) / \(ByteFormat.size(task.totalBytes))"
+            ? ByteFormat.size(task.downloadedBytes, digits: .fixed)
+            : "\(ByteFormat.size(task.downloadedBytes, digits: .fixed)) / \(ByteFormat.size(task.totalBytes, digits: .fixed))"
     }
 
     /// The segment count the percentage is computed from. Doubles as the
@@ -449,7 +450,7 @@ struct DownloadRowView: View {
     private func activeMetrics(showsTimeLeft: Bool, showsParts: Bool) -> some View {
         HStack(spacing: 10) {
             metric(icon: "internaldrive", text: sizeMetricText)
-            metric(icon: "gauge.with.dots.needle.67percent", text: ByteFormat.speed(task.speed))
+            metric(icon: "gauge.with.dots.needle.67percent", text: ByteFormat.speed(task.speed, digits: .fixed))
             if showsTimeLeft, task.estimatedTimeRemaining > 0 {
                 metric(icon: "clock", text: formatTime(task.estimatedTimeRemaining) + " left")
             }

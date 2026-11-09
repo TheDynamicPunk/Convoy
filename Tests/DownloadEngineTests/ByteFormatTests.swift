@@ -61,4 +61,47 @@ final class ByteFormatTests: XCTestCase {
     func testSpeedAtZeroStillEndsInPerSecond() {
         XCTAssertTrue(ByteFormat.speed(0, locale: us).hasSuffix("/s"))
     }
+
+    // MARK: - Fixed digits
+
+    private func fixed(_ bytes: Int64, in units: ByteCountFormatStyle.Units = .all) -> String {
+        ByteFormat.size(bytes, in: units, digits: .fixed, locale: us)
+    }
+
+    func testFixedAlwaysHasExactlyOneDecimal() {
+        XCTAssertEqual(fixed(304_000_000), "304.0 MB", "a whole number keeps its .0")
+        XCTAssertEqual(fixed(304_200_000), "304.2 MB")
+        XCTAssertEqual(fixed(2_000_000_000), "2.0 GB")
+        XCTAssertEqual(fixed(12_000), "12.0 KB")
+        XCTAssertEqual(fixed(512), "512.0 B")
+        XCTAssertEqual(fixed(0), "0.0 B")
+    }
+
+    func testFixedCountsInThousandsLikeFinderNotInBinary() {
+        XCTAssertEqual(fixed(1_500_000), "1.5 MB")
+        XCTAssertEqual(fixed(1_073_741_824), "1.1 GB")
+    }
+
+    func testFixedRollsIntoTheNextUnitInsteadOfReadingOneThousand() {
+        XCTAssertEqual(fixed(999_949), "999.9 KB")
+        XCTAssertEqual(fixed(999_950), "1.0 MB")
+    }
+
+    func testFixedKeepsItsLengthWhereverTheValueLandsInAUnit() {
+        // 100 MB to 999 MB, whole numbers included.
+        let lengths = Set(stride(from: Int64(100_000_000), to: 999_000_000, by: 777_777).map { fixed($0).count })
+        XCTAssertEqual(lengths, [8])
+        XCTAssertEqual(fixed(304_000_000).count, fixed(304_100_000).count)
+    }
+
+    func testFixedHonoursTheUnitLimit() {
+        XCTAssertEqual(fixed(500_000_000, in: [.gb, .mb]), "500.0 MB")
+        XCTAssertEqual(fixed(1_500_000_000, in: [.gb, .mb]), "1.5 GB")
+        XCTAssertEqual(fixed(0, in: .mb), "0.0 MB")
+    }
+
+    func testFixedSpeedIsAFixedSizePerSecond() {
+        XCTAssertEqual(ByteFormat.speed(12_000_000, digits: .fixed, locale: us), "12.0 MB/s")
+        XCTAssertEqual(ByteFormat.speed(512, digits: .fixed, locale: us), "512.0 B/s")
+    }
 }
