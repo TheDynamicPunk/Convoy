@@ -520,11 +520,19 @@ struct ContentView: View {
     }
 
     /// The header is a bar over the list rather than stacked above it, so the
-    /// list runs up under the toolbar the way the system expects; otherwise
-    /// full screen draws an opaque band behind the toolbar.
+    /// list runs up under the toolbar; otherwise full screen draws an opaque
+    /// band behind the toolbar. From macOS 26 `safeAreaBar` keeps it flush on
+    /// the pane, where `.bar` left a lighter slab in dark mode.
+    @ViewBuilder
     private var listWithHeader: some View {
-        downloadsList.safeAreaInset(edge: .top, spacing: 0) {
-            downloadsHeader.background(.bar)
+        if #available(macOS 26, *) {
+            downloadsList.safeAreaBar(edge: .top, spacing: 0) {
+                downloadsHeader
+            }
+        } else {
+            downloadsList.safeAreaInset(edge: .top, spacing: 0) {
+                downloadsHeader.background(.bar)
+            }
         }
     }
 
