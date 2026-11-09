@@ -98,6 +98,16 @@ VERSION="${TAG#v}"
 BUILD_NUMBER="$(git -C "$PROJECT_DIR" rev-list --count HEAD)"
 ARCHS="arm64 x86_64"
 
+# Release notes: one Markdown file per version, committed before tagging. The
+# same text goes in the GitHub release; it is rendered to HTML below for the
+# update dialog. Checked here so a missing file fails before the slow build.
+NOTES_MD="${PROJECT_DIR}/release-notes/${VERSION}.md"
+if [ ! -f "$NOTES_MD" ]; then
+    echo "ERROR: no release notes at ${NOTES_MD}."
+    echo "  Write them (see release-notes/TEMPLATE.md), commit, and move the tag."
+    exit 1
+fi
+
 echo "Releasing ${APP_NAME} ${VERSION} (build ${BUILD_NUMBER}) from ${TAG}"
 echo ""
 
@@ -211,8 +221,67 @@ if [ -n "${CONVOY_PAGES_DIR:-}" ]; then
 fi
 
 DOWNLOAD_URL_PREFIX="${CONVOY_DOWNLOAD_URL_PREFIX:-https://github.com/TheDynamicPunk/Convoy/releases/download/${TAG}/}"
+
+# Release notes for the update dialog. generate_appcast looks for an .html file
+# named like the archive and, with --embed-release-notes, puts its contents in
+# the appcast item, so nothing extra has to be hosted. Rendered locally with a
+# stdlib-only Python script; no network call needed. The same Markdown is pasted
+# into the GitHub release body, where GitHub renders it with its own pipeline.
+NOTES_HTML="${APPCAST_STAGING}/${APP_NAME}-${VERSION}.html"
+{
+    echo '<meta name="color-scheme" content="light dark">'
+    python3 - "$NOTES_MD" <<'PYLOCAL'
+"""Minimal Markdown-to-HTML renderer (stdlib only).
+
+Covers the subset used in release notes: ### headings, unordered lists (- item),
+**bold**, `code`, [links](url), and plain paragraphs."""
+import re, sys, html as H
+
+def inline(t):
+    t = H.escape(t)
+    t = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', t)
+    t = re.sub(r'`(.+?)`', r'<code>\1</code>', t)
+    t = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
+    return t
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+out, in_ul = [], False
+for raw in lines:
+    s = raw.strip()
+    if not s or s.startswith("<!--") or s.startswith("-->"):
+        if in_ul:
+            out.append("</ul>"); in_ul = False
+        continue
+    if s.startswith("### "):
+        if in_ul:
+            out.append("</ul>"); in_ul = False
+        out.append(f"<h3>{inline(s[4:])}</h3>")
+    elif s.startswith("## "):
+        if in_ul:
+            out.append("</ul>"); in_ul = False
+        out.append(f"<h2>{inline(s[3:])}</h2>")
+    elif s.startswith("- "):
+        if not in_ul:
+            out.append("<ul>"); in_ul = True
+        out.append(f"<li>{inline(s[2:])}</li>")
+    else:
+        if in_ul:
+            out.append("</ul>"); in_ul = False
+        out.append(f"<p>{inline(s)}</p>")
+if in_ul:
+    out.append("</ul>")
+print("\n".join(out))
+PYLOCAL
+} > "$NOTES_HTML"
+# The meta line alone is 48 bytes; anything beyond it is rendered notes.
+if [ "$(wc -c < "$NOTES_HTML")" -le 50 ]; then
+    echo "ERROR: could not render the release notes to HTML (empty output from Python)."
+    exit 1
+fi
+
 "${SPARKLE_BIN}/generate_appcast" \
     --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
+    --embed-release-notes \
     --maximum-versions 0 \
     --maximum-deltas 0 \
     "$APPCAST_STAGING"

@@ -78,6 +78,13 @@
     <key>SUEnableAutomaticChecks</key>
     <true/>
 
+    <!-- How often Sparkle checks while the app stays running: 6 hours, in
+         seconds. AppUpdater also runs one check at every launch. Like the
+         keys above this is compiled into each copy, so it only applies to
+         people who have installed a build that carries it. -->
+    <key>SUScheduledCheckInterval</key>
+    <integer>21600</integer>
+
     <!-- Native messaging host -->
     <key>NSAppTransportSecurity</key>
     <dict>

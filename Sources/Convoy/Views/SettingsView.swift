@@ -322,6 +322,11 @@ private struct UpdatesSection: View {
                 get: { updater.automaticallyChecksForUpdates },
                 set: { updater.automaticallyChecksForUpdates = $0 }
             ))
+            Toggle("Install updates automatically", isOn: Binding(
+                get: { updater.automaticallyDownloadsUpdates },
+                set: { updater.automaticallyDownloadsUpdates = $0 }
+            ))
+            .disabled(!updater.allowsAutomaticUpdates)
             LabeledContent("Check now") {
                 Button("Check for Updates…") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)
@@ -329,7 +334,11 @@ private struct UpdatesSection: View {
         } header: {
             Text("Updates")
         } footer: {
-            Text("Convoy checks once a day and asks before installing anything.")
+            if updater.automaticallyDownloadsUpdates {
+                Text("Convoy checks when it opens and every few hours, and installs new versions on its own.")
+            } else {
+                Text("Convoy checks when it opens and every few hours, and asks before installing anything.")
+            }
         }
     }
 }
