@@ -28,6 +28,25 @@ final class ByteFormatTests: XCTestCase {
         XCTAssertEqual(size(999), "999 bytes")
     }
 
+    func testASingleByteIsSingular() {
+        XCTAssertEqual(size(1), "1 byte")
+    }
+
+    func testThreeSignificantDigits() {
+        XCTAssertEqual(size(1_234_000), "1.23 MB")
+        XCTAssertEqual(size(12_340_000), "12.3 MB")
+        XCTAssertEqual(size(123_400_000), "123 MB")
+    }
+
+    func testRoundsUpIntoTheNextUnitInsteadOfReadingOneThousand() {
+        XCTAssertEqual(size(999_400), "999 KB")
+        XCTAssertEqual(size(999_999), "1 MB")
+    }
+
+    func testUsesTheLocalesDecimalSeparator() {
+        XCTAssertEqual(ByteFormat.size(1_048_576, locale: Locale(identifier: "de_DE")), "1,05 MB")
+    }
+
     func testZeroReadsAsAFigureNotWords() {
         let zero = size(0)
         XCTAssertFalse(zero.contains("Zero"), zero)
