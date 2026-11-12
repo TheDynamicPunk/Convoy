@@ -65,7 +65,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
         XCTAssertEqual(moved.status(of: chrome), .setUp)
         XCTAssertEqual(try manifest(moved, chrome)["path"] as? String, root.path + "/Moved.app/Contents/MacOS/NativeMessagingHost")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.manifestURL(for: brave).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.manifestURL(for: helium).path))
     }
 
     func testAFileAllowingAnotherExtensionNeedsRepair() throws {
@@ -94,17 +94,17 @@ final class BrowserIntegrationTests: XCTestCase {
         try subject.setUp(chrome)
 
         try subject.remove(chrome)
-        try subject.remove(brave)
+        try subject.remove(helium)
 
         XCTAssertEqual(subject.status(of: chrome), .notSetUp)
     }
 
     func testRelevantBrowsersAreInstalledOnesPlusAnyHoldingOurFile() throws {
         let host = try makeHost("A")
-        try integration(host: host).setUp(brave)
+        try integration(host: host).setUp(helium)
         let subject = integration(host: host, installed: ["com.google.Chrome"])
 
-        XCTAssertEqual(subject.relevantBrowsers().map(\.id), ["chrome", "brave"])
+        XCTAssertEqual(subject.relevantBrowsers().map(\.id), ["chrome", "helium"])
     }
 
     func testExtensionFolderIsCopiedOnlyWhenItChanges() throws {
@@ -246,6 +246,19 @@ final class BrowserIntegrationTests: XCTestCase {
         XCTAssertEqual(subject.status(of: chrome), .setUp)
     }
 
+    func testBraveSharesChromesFile() throws {
+        let subject = integration(host: try makeHost("A"))
+
+        try subject.setUp(brave)
+
+        XCTAssertEqual(subject.manifestURL(for: brave), subject.manifestURL(for: chrome))
+        XCTAssertEqual(subject.manifestURL(for: brave).path,
+                       appSupport.path + "/Google/Chrome/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: appSupport.path
+            + "/BraveSoftware/Brave-Browser/NativeMessagingHosts/io.github.thedynamicpunk.convoy.native.json"))
+        XCTAssertEqual(subject.status(of: chrome), .setUp)
+    }
+
     func testHeliumHasItsOwnFileAndIsFoundByBundleIdentifier() throws {
         let subject = integration(host: try makeHost("A"), installed: ["net.imput.helium"])
 
@@ -283,20 +296,20 @@ final class BrowserIntegrationTests: XCTestCase {
 
         let shared = groups.values.filter { $0.count > 1 }.map { $0.sorted() }.sorted { $0.joined() < $1.joined() }
 
-        XCTAssertEqual(shared, [["arc", "chrome"], ["firefox", "firefox-developer", "firefox-nightly", "floorp", "librewolf", "waterfox", "zen"]])
+        XCTAssertEqual(shared, [["arc", "brave", "chrome"], ["firefox", "firefox-developer", "firefox-nightly", "floorp", "librewolf", "waterfox", "zen"]])
     }
 
     // MARK: - Files from earlier versions
 
-    private func writeLegacyArcFile(_ contents: [String: Any]) throws -> URL {
-        let url = appSupport.appendingPathComponent("Arc/User Data/NativeMessagingHosts/\(BrowserIntegration.hostName).json")
+    private func writeLegacyFile(_ contents: [String: Any], in folder: String = "Arc/User Data") throws -> URL {
+        let url = appSupport.appendingPathComponent("\(folder)/NativeMessagingHosts/\(BrowserIntegration.hostName).json")
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: contents).write(to: url)
         return url
     }
 
     func testAnArcFileFromAnEarlierVersionMovesToChromesFolder() throws {
-        let legacy = try writeLegacyArcFile(["name": BrowserIntegration.hostName, "path": "/old/NativeMessagingHost"])
+        let legacy = try writeLegacyFile(["name": BrowserIntegration.hostName, "path": "/old/NativeMessagingHost"])
         let subject = integration(host: try makeHost("A"))
 
         XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), ["arc"])
@@ -306,15 +319,28 @@ final class BrowserIntegrationTests: XCTestCase {
         XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])
     }
 
+    func testABraveFileFromAnEarlierVersionMovesToChromesFolder() throws {
+        let legacy = try writeLegacyFile(["name": BrowserIntegration.hostName, "path": "/old/NativeMessagingHost"],
+                                         in: "BraveSoftware/Brave-Browser")
+        let subject = integration(host: try makeHost("A"))
+
+        XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), ["brave"])
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+        XCTAssertEqual(subject.status(of: brave), .setUp)
+        XCTAssertEqual(subject.status(of: chrome), .setUp)
+        XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])
+    }
+
     func testMigrationLeavesOtherFilesAndUnstableLocationsAlone() throws {
-        let foreign = try writeLegacyArcFile(["name": "com.someone.else", "path": "/x"])
+        let foreign = try writeLegacyFile(["name": "com.someone.else", "path": "/x"])
         let subject = integration(host: try makeHost("A"))
 
         XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path))
         XCTAssertEqual(subject.status(of: arc), .notSetUp)
 
-        let ours = try writeLegacyArcFile(["name": BrowserIntegration.hostName, "path": "/old"])
+        let ours = try writeLegacyFile(["name": BrowserIntegration.hostName, "path": "/old"])
         let translocated = integration(host: try makeHost("T"), stable: false)
 
         XCTAssertEqual(translocated.migrateLegacyFiles().map(\.id), [])
@@ -323,7 +349,7 @@ final class BrowserIntegrationTests: XCTestCase {
     }
 
     func testMigrationKeepsTheOldFileIfRegisteringFails() throws {
-        let legacy = try writeLegacyArcFile(["name": BrowserIntegration.hostName, "path": "/old"])
+        let legacy = try writeLegacyFile(["name": BrowserIntegration.hostName, "path": "/old"])
         let subject = integration(host: nil)
 
         XCTAssertEqual(subject.migrateLegacyFiles().map(\.id), [])

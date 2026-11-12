@@ -39,8 +39,11 @@ public struct BrowserIntegration: Sendable {
                 dataFolder: "Google/Chrome Beta"),
         Browser(id: "chromium", name: "Chromium", bundleIdentifier: "org.chromium.Chromium",
                 dataFolder: "Chromium"),
+        // Brave reads Chrome's NativeMessagingHosts folder, not its own
+        // (checked on 157.1.99.56), so it shares Chrome's file and appears in
+        // Settings as one row with it.
         Browser(id: "brave", name: "Brave", bundleIdentifier: "com.brave.Browser",
-                dataFolder: "BraveSoftware/Brave-Browser"),
+                dataFolder: "Google/Chrome"),
         Browser(id: "edge", name: "Microsoft Edge", bundleIdentifier: "com.microsoft.edgemac",
                 dataFolder: "Microsoft Edge"),
         Browser(id: "vivaldi", name: "Vivaldi", bundleIdentifier: "com.vivaldi.Vivaldi",
@@ -51,9 +54,9 @@ public struct BrowserIntegration: Sendable {
         // shares Chrome's file and appears in Settings as one row with it.
         Browser(id: "arc", name: "Arc", bundleIdentifier: "company.thebrowser.Browser",
                 dataFolder: "Google/Chrome"),
-        // Helium looks in its own folder first, then falls back to Chrome's
-        // (scan-chrome-native-messaging-hosts.patch). Its own folder keeps it
-        // working when Chrome isn't set up or isn't installed.
+        // Helium reads both its own folder and Chrome's (checked on 0.19.2.1).
+        // It keeps a file of its own so it works when Chrome isn't set up or
+        // isn't installed.
         Browser(id: "helium", name: "Helium", bundleIdentifier: "net.imput.helium",
                 dataFolder: "net.imput.helium"),
         // Firefox, Zen, Floorp, LibreWolf and Waterfox read the one shared
@@ -206,6 +209,7 @@ public struct BrowserIntegration: Sendable {
     /// read somewhere else.
     private static let legacyDataFolders: [(browserID: String, dataFolder: String)] = [
         ("arc", "Arc/User Data"),
+        ("brave", "BraveSoftware/Brave-Browser"),
     ]
 
     /// Launch step: a file an earlier version wrote to the wrong folder is
