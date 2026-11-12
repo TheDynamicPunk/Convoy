@@ -25,7 +25,8 @@ macOS asks you to approve it once — see [Installing](#installing).
   come separately, merged afterwards with AVFoundation.
 - **YouTube** through yt-dlp, which the app installs on request from
   Settings → YouTube. Newer versions of it arrive with Convoy updates.
-- **Updates itself** — checks once a day and asks before installing.
+- **Updates itself** — checks when it opens and every six hours after that,
+  and asks before installing, or installs on its own if you turn that on.
 - **Queue** — filter by status (downloading, completed, paused, failed) and
   search.
 - **Download categories** — sort downloads into folders for you, by file type
@@ -79,10 +80,11 @@ shasum -a 256 -c Convoy-<version>.pkg.sha256
 
 ## Updating
 
-Convoy checks for updates once a day and asks before installing one. To check
-now, choose **Convoy → Check for Updates…**. Settings → General turns the
-daily check off. Updates are signed, and Convoy installs only ones signed with
-this project's key.
+Convoy checks for updates when it opens and every six hours while it's running,
+and asks before installing one. To check now, choose **Convoy → Check for
+Updates…**. Settings → General turns the automatic check off, and has a switch
+to install updates without asking. Updates are signed, and Convoy installs only
+ones signed with this project's key.
 
 ## Setting up the browser extension
 
@@ -153,8 +155,9 @@ later.
 
 The app registers the host with each browser itself, by writing a small file
 into the folder that browser reads, and repoints those files if the app is
-moved. Most browsers have a folder of their own. Arc reads Chrome's, so the two
-share one file and appear as one row in Settings → Browser.
+moved. Most browsers have a folder of their own. Brave and Arc read Chrome's, so
+the three share one file and appear as one row in Settings → Browser, with each
+installed browser's icon beside the names.
 
 ## Architecture
 
