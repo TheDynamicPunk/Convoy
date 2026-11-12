@@ -11,7 +11,8 @@ final class BrowserSetupModel: ObservableObject {
         /// Browsers sharing one registration file appear as one row.
         let displayName: String
         let status: BrowserIntegration.Status
-        let icon: NSImage?
+        /// The icon of each installed browser on this file, in table order.
+        let icons: [NSImage]
         var id: String { browser.id }
     }
 
@@ -83,13 +84,15 @@ final class BrowserSetupModel: ObservableObject {
             }
         }
         rows = groups.map { group in
-            let installed = group.browsers.filter { integration.applicationURL(for: $0) != nil }
-            let representative = installed.first ?? group.browsers[0]
-            let names = (installed.isEmpty ? [representative] : installed).map(\.name)
+            let installed = group.browsers.compactMap { browser in
+                integration.applicationURL(for: browser).map { (browser: browser, url: $0) }
+            }
+            let representative = installed.first?.browser ?? group.browsers[0]
+            let names = (installed.isEmpty ? [representative] : installed.map { $0.browser }).map(\.name)
             return Row(browser: representative,
                        displayName: names.joined(separator: ", "),
                        status: integration.status(of: representative),
-                       icon: integration.applicationURL(for: representative).map { NSWorkspace.shared.icon(forFile: $0.path) })
+                       icons: installed.map { NSWorkspace.shared.icon(forFile: $0.url.path) })
         }
     }
 

@@ -111,13 +111,40 @@ private struct BrowserName: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if let icon = row.icon {
-                Image(nsImage: icon).resizable().frame(width: 20, height: 20)
-            } else {
-                Image(systemName: "globe").frame(width: 20, height: 20).foregroundStyle(.secondary)
-            }
+            BrowserIconStack(icons: row.icons)
             Text(row.displayName)
         }
+    }
+}
+
+/// The icons of the browsers sharing one file, overlapped so a row shows at a
+/// glance which browsers one setup covers. The first sits on top and the rest
+/// peek out behind it. The names beside it list every browser, so the stack
+/// stops at `limit` icons.
+private struct BrowserIconStack: View {
+    let icons: [NSImage]
+
+    private let size: CGFloat = 20
+    private let step: CGFloat = 11
+    private let limit = 4
+
+    var body: some View {
+        let shown = Array(icons.prefix(limit))
+        ZStack(alignment: .leading) {
+            if shown.isEmpty {
+                Image(systemName: "globe").frame(width: size, height: size).foregroundStyle(.secondary)
+            }
+            ForEach(shown.indices, id: \.self) { index in
+                Image(nsImage: shown[index])
+                    .resizable()
+                    .frame(width: size, height: size)
+                    .shadow(color: .black.opacity(0.35), radius: 1.5, x: 1.5)
+                    .offset(x: CGFloat(index) * step)
+                    .zIndex(Double(shown.count - index))
+            }
+        }
+        .frame(width: size + step * CGFloat(max(shown.count, 1) - 1), height: size, alignment: .leading)
+        .accessibilityHidden(true)
     }
 }
 
