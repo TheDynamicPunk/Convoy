@@ -137,6 +137,12 @@ struct ContentView: View {
     /// action needed.
     private var isSelectionModeActive: Bool { !selectedTaskIDs.isEmpty }
 
+    /// A visible Select All action is useful only when there are rows left to
+    /// add to the current selection. Like ⌘A, it works on the filtered list.
+    private var hasUnselectedVisibleTasks: Bool {
+        filteredTasks.contains { !selectedTaskIDs.contains($0.id) }
+    }
+
     /// Shared by the checkbox and (once in selection mode) a click anywhere
     /// on a row. Shift-click range-selects from `selectionAnchorID`,
     /// replacing the current selection with exactly that range (Finder/Mail
@@ -292,6 +298,21 @@ struct ContentView: View {
             // is also how the person knows it's recoverable.
             let files = outcome.trashedCount == 1 ? "1 file" : "\(outcome.trashedCount) files"
             showToast("Removed \(outcome.removedCount) from the list — \(files) moved to the Trash.")
+        }
+    }
+
+    /// Removes completed rows from Convoy's list while keeping their finished
+    /// files in place. This is intentionally separate from Delete All
+    /// Completed, which asks whether those files should go to the Trash.
+    private func clearCompletedDownloadsFromList() {
+        let taskIDs = Set(downloadManager.completedTasks.map(\.id))
+        guard !taskIDs.isEmpty else { return }
+
+        Task {
+            let outcome = await downloadManager.delete(taskIDs: taskIDs, moveFilesToTrash: false)
+            guard outcome.removedCount > 0 else { return }
+            let noun = outcome.removedCount == 1 ? "download" : "downloads"
+            showToast("Cleared \(outcome.removedCount) completed \(noun) from the list. Files were kept.")
         }
     }
     
@@ -620,15 +641,24 @@ struct ContentView: View {
     private static let rowInsets = EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
 
     private var downloadsHeader: some View {
-        HStack {
+        HStack(spacing: 12) {
             Text(downloadsHeaderTitle)
                 .font(.title3.weight(.semibold))
                 .fixedSize()
 
-            Spacer()
+            if isSelectionModeActive {
+                Text("\(selectedTaskIDs.count) selected")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
 
-            // Titled buttons while they fit, icons with their help text when
-            // the window is too narrow.
+            Spacer(minLength: 0)
+
+            // Titled buttons while they fit, icons with their help text
+            // when the window is too narrow. One wrapper serves the category
+            // actions and the selection actions alike, so both sit in the
+            // same place and collapse the same way.
             ViewThatFits(in: .horizontal) {
                 headerActions.labelStyle(.titleAndIcon)
                 headerActions.labelStyle(.iconOnly)
@@ -639,27 +669,63 @@ struct ContentView: View {
         .padding(.vertical, 14)
     }
 
+    /// Selection mode swaps the header's category actions for the selection's
+    /// own, in the same trailing spot, so the controls never jump sideways
+    /// when the first row is ticked.
+    @ViewBuilder
     private var headerActions: some View {
-        HStack {
-            if !selectedTaskIDs.isEmpty {
-                Button(action: { requestDelete(selectedTaskIDs) }) {
-                    Label("Delete Selected (\(selectedTaskIDs.count))", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .help("Delete the selected downloads")
+        if isSelectionModeActive {
+            selectionActions
+        } else {
+            categoryActions
+        }
+    }
 
-                Button(action: clearSelection) {
-                    Label("Clear Selection", systemImage: "xmark.circle")
+    /// Labelled actions (the wrapper in `downloadsHeader` drops the titles to
+    /// icons when space runs out). Select All stays in place and dims once
+    /// every visible row is selected, rather than vanishing and shifting its
+    /// neighbours; deleting is set apart as the destructive action.
+    private var selectionActions: some View {
+        HStack(spacing: 8) {
+            Button(action: selectAllVisible) {
+                Label("Select All", systemImage: "checkmark.circle.fill")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!hasUnselectedVisibleTasks)
+            .help("Select all downloads currently shown")
+
+            Button(action: clearSelection) {
+                Label("Deselect All", systemImage: "xmark.circle.fill")
+            }
+            .buttonStyle(.bordered)
+            .help("Clear the selection")
+
+            Divider()
+                .frame(height: 18)
+
+            Button(action: { requestDelete(selectedTaskIDs) }) {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .help("Delete the selected downloads")
+        }
+    }
+
+    @ViewBuilder
+    private var categoryActions: some View {
+        HStack {
+            if selectedCategory == .completed, !downloadManager.completedTasks.isEmpty {
+                Button(action: clearCompletedDownloadsFromList) {
+                    Label("Clear All Completed", systemImage: "xmark.circle")
                 }
                 .buttonStyle(.bordered)
-                .help("Clear the selection")
-            } else if selectedCategory == .completed, !downloadManager.completedTasks.isEmpty {
-                // "Delete", not "Clear", in both category buttons: the
-                // underlying operation is identical to the row's Delete, and
-                // a gentler verb for the same destruction was its own kind of
-                // lie — especially for failed downloads, whose partial bytes
-                // a retry would otherwise have resumed from.
+                .help("Remove completed downloads from the list, keeping their files on disk")
+
+                // Keep the destructive action labelled Delete, separate from
+                // Clear All Completed above, which leaves finished files in
+                // place. Failed downloads also use Delete because their
+                // partial bytes are what a retry would otherwise resume from.
                 Button(action: { requestDelete(Set(downloadManager.completedTasks.map(\.id))) }) {
                     Label("Delete All Completed", systemImage: "trash")
                 }
