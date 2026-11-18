@@ -156,7 +156,7 @@ public actor YouTubeResolver {
     public static let shared = YouTubeResolver()
 
     private let logger = Logger(subsystem: "Convoy", category: "YouTubeResolver")
-    private var potProcess: Process?
+    private var potProcess: ManagedProcess?
 
     private var binDir: URL { HelperLocations.binDirectory }
 
@@ -828,26 +828,32 @@ public actor YouTubeResolver {
         // listening (crashed, or never actually bound the port) — clean up
         // the stale reference before trying again.
         if let stale = potProcess {
-            if stale.isRunning { stale.terminate() }
+            if stale.isRunning { stale.stop() }
             potProcess = nil
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: potPath)
         // Bare invocation defaults to one-shot "Script Mode" (generates a
         // single token and exits) — we need the persistent HTTP server that
         // yt-dlp polls on 127.0.0.1:4416, which requires the explicit
         // "server" subcommand. Without this the process either exits
         // immediately or sits idle, and yt-dlp hangs forever waiting for a
         // token response that can never arrive.
-        process.arguments = ["server", "--port", "4416"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        //
+        // Started under the guard so it goes down with Convoy. Before, a quit
+        // or a crash left it running on this port; the next launch then found
+        // an unmanaged server already there (see the comment above).
+        // `stderrTailBytes: 0` sends its output to /dev/null, as before.
+        let spec = ManagedProcessSpec(
+            executable: URL(fileURLWithPath: potPath),
+            arguments: ["server", "--port", "4416"],
+            stderrTailBytes: 0,
+            label: "bgutil-pot"
+        )
 
         do {
-            try process.run()
+            let process = try ProcessSupervisor.shared.launch(spec)
             potProcess = process
-            logger.notice("bgutil-pot started (pid \(process.processIdentifier, privacy: .public))")
+            logger.notice("bgutil-pot started (guard pid \(process.processIdentifier, privacy: .public))")
             // Give it a moment to bind its port before yt-dlp tries to use
             // it, then actually confirm it worked rather than assuming —
             // a port conflict or crash-on-start exits the child within
@@ -889,90 +895,51 @@ public actor YouTubeResolver {
 
     /// Same as run(), but can never hang forever — if yt-dlp doesn't finish
     /// within the timeout (network stall, a hung token request, etc.) this
-    /// kills the process and surfaces a clear timeout error instead of
+    /// stops the process and surfaces a clear timeout error instead of
     /// leaving the task stuck on "Starting" with no explanation.
     ///
-    /// Reads stdout/stderr incrementally via readabilityHandler rather than
-    /// only after the process exits. Reading only at the end is a classic
-    /// Process/Pipe deadlock: macOS pipes have a small fixed buffer (64KB),
-    /// and --dump-json output (thumbnails, every format, subtitle metadata)
-    /// can exceed that easily. Once full, the child blocks trying to write
-    /// more and waits for us to drain it — but if we're waiting for it to
-    /// *finish* before reading anything, neither side ever moves. This was
-    /// almost certainly why yt-dlp appeared to "hang" even on requests that
-    /// would otherwise resolve in under a second.
+    /// Output is read incrementally by `ManagedProcess`, never only after the
+    /// process exits. Reading only at the end is a classic Process/Pipe
+    /// deadlock: macOS pipes have a small fixed buffer (64KB), and --dump-json
+    /// output (thumbnails, every format, subtitle metadata) can exceed that
+    /// easily. Once full, the child blocks trying to write more and waits for
+    /// us to drain it — but if we're waiting for it to *finish* before
+    /// reading anything, neither side ever moves. This was almost certainly
+    /// why yt-dlp appeared to "hang" even on requests that would otherwise
+    /// resolve in under a second.
     private func runWithTimeout(_ executable: String, args: [String], timeoutSeconds: Int) async throws -> (stdout: String, stderr: String, exitCode: Int32) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = args
+        let executableURL = URL(fileURLWithPath: executable)
+        let process = try ProcessSupervisor.shared.launch(ManagedProcessSpec(
+            executable: executableURL,
+            arguments: args,
+            collectStdout: true,
+            // Was unbounded. 64 KB is far more than any yt-dlp failure writes.
+            stderrTailBytes: 65_536,
+            label: executableURL.lastPathComponent
+        ))
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let stdoutBuffer = DataAccumulator()
-        let stderrBuffer = DataAccumulator()
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty { stdoutBuffer.append(data) }
+        // Stops the helper at the timeout, and also if the calling task is
+        // cancelled. The task group this replaced lost its timer on
+        // cancellation and then waited, uncancellably, for yt-dlp to finish
+        // by itself: a cancelled caller sat there until yt-dlp's own socket
+        // timeout, with nothing left to end it.
+        guard let exit = await process.waitForExit(timeout: TimeInterval(timeoutSeconds)) else {
+            // Cancellation can race the timeout while the helper is shutting
+            // down. Preserve cancellation as the caller-visible result.
+            try Task.checkCancellation()
+            throw YouTubeResolverError.processFailed("timed out after \(timeoutSeconds)s — yt-dlp never returned")
         }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty { stderrBuffer.append(data) }
+        // A cancelled caller got `.stopped` above, because the helper was
+        // stopped. Say so, rather than going on to parse half an output.
+        try Task.checkCancellation()
+
+        // Callers only look at zero versus not, and at stderr.
+        let code: Int32
+        switch exit {
+        case .exited(let status): code = status
+        case .crashed(let signal): code = signal
+        case .stopped: code = SIGTERM
         }
-
-        return try await withThrowingTaskGroup(of: (stdout: String, stderr: String, exitCode: Int32).self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { continuation in
-                    process.terminationHandler = { proc in
-                        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                        stderrPipe.fileHandleForReading.readabilityHandler = nil
-                        // Drain anything left in the pipe after the readability
-                        // handler's last callback but before it was torn down.
-                        let remainingOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                        let remainingErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                        if !remainingOut.isEmpty { stdoutBuffer.append(remainingOut) }
-                        if !remainingErr.isEmpty { stderrBuffer.append(remainingErr) }
-
-                        let stdout = String(data: stdoutBuffer.data, encoding: .utf8) ?? ""
-                        let stderr = String(data: stderrBuffer.data, encoding: .utf8) ?? ""
-                        continuation.resume(returning: (stdout, stderr, proc.terminationStatus))
-                    }
-                    do {
-                        try process.run()
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
-                if process.isRunning { process.terminate() }
-                throw YouTubeResolverError.processFailed("timed out after \(timeoutSeconds)s — yt-dlp never returned")
-            }
-
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
-    }
-}
-
-/// Thread-safe byte accumulator for the readabilityHandler callbacks above,
-/// which fire on a background dispatch queue outside this actor's isolation.
-private final class DataAccumulator: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _data = Data()
-    var data: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return _data
-    }
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        _data.append(chunk)
+        return (process.stdoutText, process.stderrText, code)
     }
 }

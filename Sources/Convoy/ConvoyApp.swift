@@ -65,6 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // newer ones listed than are installed. Returns immediately unless
         // this launch is the one after such an update.
         HelperAutoUpdate.shared.runAtLaunch()
+        // Stops any helper an earlier run left behind. Helpers normally cannot
+        // outlive the app (see ManagedProcess), so this is the backstop for the
+        // guard itself having been killed. Off the main thread: it can wait on
+        // a process to exit.
+        DispatchQueue.global(qos: .utility).async {
+            ProcessSupervisor.shared.sweepOrphans()
+        }
     }
     
     /// A safety net for the Hide Dock icon setting: if anything outside the
@@ -92,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationWillTerminate(_ notification: Notification) {
         DownloadManager.shared.saveBeforeTermination()
+        // After the save, so what was written reflects the downloads as they
+        // were when the person quit, not the cancellations this causes. Without
+        // this a yt-dlp download carried on after Convoy had gone.
+        ProcessSupervisor.shared.stopAll(timeout: 3)
     }
 }
 

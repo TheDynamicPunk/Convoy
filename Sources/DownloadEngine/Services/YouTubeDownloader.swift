@@ -38,8 +38,8 @@ public actor YouTubeDownloader {
     private var ytdlpPath: String { HelperLocations.ytdlp }
     private var potPath: String { binDir.appendingPathComponent("bgutil-pot").path }
 
-    /// Running processes keyed by task id, so pause/cancel can terminate them.
-    private var running: [UUID: Process] = [:]
+    /// Running processes keyed by task id, so pause/cancel can stop them.
+    private var running: [UUID: ManagedProcess] = [:]
 
     /// Downloads `formatSelector` from `pageURL` to `destination`, reporting
     /// progress as it goes. Returns when yt-dlp exits successfully.
@@ -111,65 +111,47 @@ public actor YouTubeDownloader {
 
     /// Runs yt-dlp to completion, feeding each stdout line to `onLine`.
     ///
-    /// Shared by the single-file and two-file paths so the process plumbing —
-    /// both pipes drained concurrently (leaving either unread deadlocks the
-    /// child once its buffer fills), bounded stderr capture, and a signal exit
-    /// read as cancellation rather than failure — exists once.
+    /// Shared by the single-file and two-file paths. The process plumbing
+    /// (both pipes drained, bounded stderr capture, a helper that never
+    /// outlives the app) lives in `ManagedProcess`; what is left here is
+    /// deciding what each way of ending means.
     private func runYtDlp(
         taskID: UUID,
         args: [String],
         onLine: @escaping @Sendable (String) -> Void
     ) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ytdlpPath)
-        process.arguments = args
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        let collector = OutputCollector()
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            for line in collector.appendStdout(chunk) { onLine(line) }
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            collector.appendStderr(chunk)
-        }
-
+        let process = try ProcessSupervisor.shared.launch(ManagedProcessSpec(
+            executable: URL(fileURLWithPath: ytdlpPath),
+            arguments: args,
+            onStdoutLine: onLine,
+            stderrTailBytes: 8192,
+            label: "yt-dlp"
+        ))
         running[taskID] = process
+        defer { running[taskID] = nil }
 
-        defer {
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            running[taskID] = nil
-        }
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { _ in continuation.resume(returning: ()) }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
-
-        let status = process.terminationStatus
-        guard status != 0 else { return }
-
-        let stderr = collector.stderrText()
-        // A terminate() from cancel()/pause() surfaces here as a signal
-        // exit; that's a user action, not a failure to report.
-        if wasTerminatedBySignal(process) {
+        switch await process.waitForExit() {
+        case .exited(0):
+            return
+        case .stopped:
+            // cancel()/pause() (or Convoy quitting) asked it to stop: a user
+            // action, not a failure to report.
             logger.notice("yt-dlp download stopped by user for task \(taskID, privacy: .public)")
             throw DownloadError.cancelled
+        case .crashed(let signal):
+            // This used to read as a cancel, because any signal exit did. A
+            // helper that dies on its own is a failure, and says so.
+            let stderr = process.stderrText
+            logger.error("yt-dlp crashed (signal \(signal, privacy: .public)): \(stderr)")
+            let lastLine = stderr.split(separator: "\n").last.map(String.init)
+            throw YouTubeResolverError.processFailed(
+                "yt-dlp stopped unexpectedly (signal \(signal))" + (lastLine.map { ": \($0)" } ?? "")
+            )
+        case .exited(let status):
+            let stderr = process.stderrText
+            logger.error("yt-dlp exited \(status, privacy: .public): \(stderr)")
+            throw Self.mapFailure(exitCode: status, stderr: stderr)
         }
-        logger.error("yt-dlp exited \(status, privacy: .public): \(stderr)")
-        throw Self.mapFailure(exitCode: status, stderr: stderr)
     }
 
     // MARK: - Two-file download + local merge
@@ -337,15 +319,11 @@ public actor YouTubeDownloader {
     /// file it leaves behind is what `--continue` picks up on resume.
     public func cancel(taskID: UUID) {
         guard let process = running[taskID], process.isRunning else { return }
-        process.terminate()
+        process.stop()
     }
 
     public func isRunning(taskID: UUID) -> Bool {
         running[taskID]?.isRunning ?? false
-    }
-
-    private func wasTerminatedBySignal(_ process: Process) -> Bool {
-        process.terminationReason == .uncaughtSignal
     }
 
     /// Parses a `--progress-template` line. Fields may be "NA" when yt-dlp
@@ -389,8 +367,6 @@ public actor YouTubeDownloader {
     }
 }
 
-/// Buffers yt-dlp's two output streams. A plain class behind a lock because the
-/// readability handlers fire on arbitrary queues, outside the actor.
 /// Folds yt-dlp's per-file progress into one continuous transfer.
 ///
 /// yt-dlp reports `downloaded_bytes` per file and restarts at zero for the
@@ -437,42 +413,5 @@ private final class TwoFileProgress: @unchecked Sendable {
             totalBytes: total,
             bytesPerSecond: p.bytesPerSecond
         )
-    }
-}
-
-private final class OutputCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stdoutRemainder = ""
-    private var stderrBuffer = ""
-
-    /// Appends stdout bytes and returns whatever complete lines that produced.
-    func appendStdout(_ data: Data) -> [String] {
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
-        lock.lock(); defer { lock.unlock() }
-        stdoutRemainder += text
-        // yt-dlp with --newline still uses \r within some progress output, so
-        // split on both and keep only the trailing partial line.
-        var lines = stdoutRemainder.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).map(String.init)
-        if let last = stdoutRemainder.last, last != "\n" && last != "\r", !lines.isEmpty {
-            stdoutRemainder = lines.removeLast()
-        } else {
-            stdoutRemainder = ""
-        }
-        return lines
-    }
-
-    func appendStderr(_ data: Data) {
-        guard let text = String(data: data, encoding: .utf8) else { return }
-        lock.lock(); defer { lock.unlock() }
-        // Bounded so a pathological run can't grow this without limit.
-        stderrBuffer += text
-        if stderrBuffer.count > 8192 {
-            stderrBuffer = String(stderrBuffer.suffix(8192))
-        }
-    }
-
-    func stderrText() -> String {
-        lock.lock(); defer { lock.unlock() }
-        return stderrBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

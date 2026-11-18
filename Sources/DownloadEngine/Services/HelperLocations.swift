@@ -14,9 +14,21 @@ import Foundation
 /// one. Everything that needs to locate a helper reads it from here.
 public enum HelperLocations {
 
-    public static var binDirectory: URL {
+    private static var supportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Convoy/bin", isDirectory: true)
+            .appendingPathComponent("Convoy", isDirectory: true)
+    }
+
+    public static var binDirectory: URL {
+        supportDirectory.appendingPathComponent("bin", isDirectory: true)
+    }
+
+    /// Where each guarded helper process records itself: a pid file written by
+    /// the guard and the path of the executable it runs. A launch after a
+    /// crash reads these to find and stop a helper the earlier run left
+    /// behind. See `ProcessSupervisor.sweepOrphans`.
+    public static var runDirectory: URL {
+        supportDirectory.appendingPathComponent("run", isDirectory: true)
     }
 
     /// yt-dlp's onedir tree: a launcher plus the `_internal/` runtime it would
