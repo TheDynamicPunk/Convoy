@@ -269,7 +269,7 @@ public actor YouTubeDownloader {
         in workDir: URL,
         formatSelector: String
     ) throws -> (video: URL, audio: URL) {
-        let ids = formatSelector.split(separator: ",").map(String.init)
+        let ids = YouTubeResolver.fileSelectors(in: formatSelector)
         guard ids.count == 2 else {
             throw YouTubeResolverError.processFailed("expected a two-format selector, got \(formatSelector)")
         }
@@ -282,15 +282,9 @@ public actor YouTubeDownloader {
         let complete = files.filter { $0.pathExtension.lowercased() != "part" }
 
         func file(for selector: String, missing: String) throws -> URL {
-            let matches = complete.filter {
-                YouTubeResolver.fileStem($0.deletingPathExtension().lastPathComponent, satisfies: selector)
+            guard let newest = YouTubeResolver.newestFile(matching: selector, in: complete) else {
+                throw YouTubeResolverError.processFailed(missing)
             }
-            let newest = matches.max { a, b in
-                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-                return (da ?? .distantPast) < (db ?? .distantPast)
-            }
-            guard let newest else { throw YouTubeResolverError.processFailed(missing) }
             return newest
         }
         return (

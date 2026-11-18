@@ -1220,13 +1220,19 @@ public final class DownloadManager: ObservableObject {
                 // Segments always empty after relaunch — status forced to
                 // .paused so nothing auto-fires network calls on launch.
                 // task.resume() rebuilds segments fresh; each finds its own
-                // partial bytes on disk via the stable id.
+                // partial bytes on disk via the stable id. A YouTube row's
+                // count is read from disk too (see YouTubePartialProgress).
+                let restoredBytes = YouTubePartialProgress.restoredBytes(
+                    saved: snap.downloadedBytes, total: snap.totalBytes, taskID: snap.id,
+                    formatSelector: snap.ytPageURL == nil ? nil : snap.ytFormatSelector,
+                    destination: dest
+                )
                 let task = DownloadTask(
                     id: snap.id, url: snap.url, destinationURL: dest,
                     originalName: snap.originalName,
                     priority: priority, segmentCount: snap.segmentCount,
                     initialStatus: .paused, totalBytes: snap.totalBytes,
-                    downloadedBytes: snap.downloadedBytes,
+                    downloadedBytes: restoredBytes,
                     etag: snap.etag, lastModified: snap.lastModified,
                     lastValidatedAt: snap.lastValidatedAt,
                     referrerURL: snap.referrerURL,
@@ -1335,9 +1341,6 @@ public final class DownloadManager: ObservableObject {
         orphanedTemporaryBytes = report.totalBytes
     }
 
-    /// Called on every add/remove/complete, and once more on app quit (see
-    /// `saveBeforeTermination`) to catch progress since the last explicit
-    /// state change.
     /// A list this build can't decode is moved aside rather than replaced by
     /// the empty one this session would otherwise save over it.
     private func keepUnreadableList(_ error: Error) {
@@ -1350,6 +1353,9 @@ public final class DownloadManager: ObservableObject {
         }
     }
 
+    /// Called on every add/remove/complete, and once more on app quit (see
+    /// `saveBeforeTermination`) to catch progress since the last explicit
+    /// state change.
     private func savePersistedTasks() {
         guard ownsDownloadList, !listIsUnreadable else { return }
         let active = tasks.compactMap { task -> PersistedDownloadTask? in

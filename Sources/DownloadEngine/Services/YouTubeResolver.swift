@@ -644,6 +644,29 @@ public actor YouTubeResolver {
         return stem.hasPrefix(selector[selector.index(selector.startIndex, offsetBy: languageSelectorPrefix.count)..<end])
     }
 
+    /// The formats a yt-dlp `-f` selector fetches as separate files: one for an
+    /// ordinary pick, two (video, audio) for a local merge.
+    static func fileSelectors(in formatSelector: String) -> [String] {
+        formatSelector.split(separator: ",").map(String.init)
+    }
+
+    /// The file yt-dlp wrote for `selector`, newest winning when a renumbered
+    /// run left an older match. A `.part` counts as the file it will become;
+    /// callers wanting only finished files filter those out first.
+    static func newestFile(matching selector: String, in files: [URL]) -> URL? {
+        func stem(of file: URL) -> String {
+            let finished = file.pathExtension.lowercased() == "part" ? file.deletingPathExtension() : file
+            return finished.deletingPathExtension().lastPathComponent
+        }
+        return files
+            .filter { fileStem(stem(of: $0), satisfies: selector) }
+            .max { a, b in
+                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                return (da ?? .distantPast) < (db ?? .distantPast)
+            }
+    }
+
     /// The Settings preference when this video has that dub, else the original.
     public static func defaultAudioLanguage(in tracks: [YouTubeAudioTrack], preferred: String) -> String? {
         tracks.first { AudioLanguage.matches($0.language, preferred: preferred) }?.language
