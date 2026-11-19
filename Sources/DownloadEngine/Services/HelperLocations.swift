@@ -31,6 +31,15 @@ public enum HelperLocations {
         supportDirectory.appendingPathComponent("run", isDirectory: true)
     }
 
+    /// Where Convoy keeps what a torrent needs to survive a restart: its own
+    /// copy of each `.torrent` (one folder per download), so a resume does not
+    /// depend on the original file still being where it was, and the engine's
+    /// session state. Beside `bin` and `run`, not inside them: a torrent's
+    /// source has to outlive an update of the helper and a launch-time sweep.
+    public static var torrentsDirectory: URL {
+        supportDirectory.appendingPathComponent("torrents", isDirectory: true)
+    }
+
     /// yt-dlp's onedir tree: a launcher plus the `_internal/` runtime it would
     /// otherwise unpack to a temp directory on every single run.
     public static var ytdlpDirectory: URL {
@@ -56,6 +65,12 @@ public enum HelperLocations {
 
     public static var potProvider: String {
         binDirectory.appendingPathComponent("bgutil-pot").path
+    }
+
+    /// The BitTorrent engine: a single universal executable, installed the same
+    /// way as quickjs and bgutil-pot and pinned by the same manifest.
+    public static var rqbit: String {
+        binDirectory.appendingPathComponent("rqbit").path
     }
 
     /// The bundled JavaScript interpreter yt-dlp runs its EJS
