@@ -28,6 +28,16 @@ import Foundation
 /// selector, it keeps different renditions of one title apart. It is evidence
 /// of difference only, so it never merges downloads that would otherwise be
 /// separate, and a missing size on either side says nothing.
+///
+/// A torrent is the exception to all of that, and is decided before any of it:
+/// **if either side has an info hash, the answer is whether the hashes are
+/// equal**, and nothing else is consulted. The same hash is the same content
+/// however it arrived (a magnet link, a `.torrent` file, a different URL), so
+/// no size can say otherwise. Different hashes are different torrents even
+/// when the name matches, because a torrent's folder is claimed fresh under a
+/// free " (n)" name every time, so two of them cannot collide on disk the way
+/// two files can. And a torrent is never the same download as one without a
+/// hash, since neither can be resumed as the other.
 struct DownloadIdentity: Equatable {
     /// The task's source URL. For a YouTube task this is the watch page, which
     /// is why the selector below exists.
@@ -41,16 +51,25 @@ struct DownloadIdentity: Equatable {
     /// The whole file's size in bytes when exactly known, otherwise nil. Never
     /// known for streams or YouTube, whose totals are estimates.
     let size: Int64?
+    /// The torrent's v1 info hash, or nil for every other kind of download.
+    let torrentInfoHash: TorrentInfoHash?
 
-    init(url: URL, name: String, youTubeFormatSelector: String? = nil, size: Int64? = nil) {
+    init(
+        url: URL, name: String, youTubeFormatSelector: String? = nil, size: Int64? = nil,
+        torrentInfoHash: TorrentInfoHash? = nil
+    ) {
         self.url = url
         self.name = name
         self.youTubeFormatSelector = youTubeFormatSelector
         // Zero or negative means "unknown", not "empty".
         self.size = (size ?? 0) > 0 ? size : nil
+        self.torrentInfoHash = torrentInfoHash
     }
 
     func isSameDownload(as other: DownloadIdentity) -> Bool {
+        if torrentInfoHash != nil || other.torrentInfoHash != nil {
+            return torrentInfoHash != nil && torrentInfoHash == other.torrentInfoHash
+        }
         if let size = size, let otherSize = other.size, size != otherSize {
             return false
         }
