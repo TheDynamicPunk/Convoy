@@ -57,7 +57,7 @@ public actor HelperManifestStore {
         against artifact: HelperManifest.Artifact,
         helper: String
     ) throws {
-        let actual = SHA256.hash(data: downloaded).map { String(format: "%02x", $0) }.joined()
+        let actual = SHA256.hash(data: downloaded).hexString
         guard actual == artifact.sha256.lowercased() else {
             throw HelperManifestError.hashMismatch(
                 helper: helper,
@@ -82,7 +82,7 @@ public actor HelperManifestStore {
         while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
             hasher.update(data: chunk)
         }
-        let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let actual = hasher.finalize().hexString
 
         guard actual == artifact.sha256.lowercased() else {
             throw HelperManifestError.hashMismatch(

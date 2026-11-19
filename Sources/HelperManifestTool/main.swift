@@ -37,10 +37,6 @@ func requiredArgument(_ name: String) -> String {
     return value
 }
 
-func sha256Hex(_ data: Data) -> String {
-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-}
-
 func fetch(_ urlString: String) throws -> Data {
     guard let url = URL(string: urlString) else { fail("not a URL: \(urlString)") }
     var result: Result<Data, Error>!
@@ -401,7 +397,7 @@ func commandBuild() {
             note("  \(archKey): downloading…")
             let data: Data
             do { data = try fetch(urlString) } catch { fail("\(name) [\(archKey)]: \(error)") }
-            let hash = sha256Hex(data)
+            let hash = SHA256.hash(data: data).hexString
             note("    \(data.count) bytes, sha256 \(hash)")
 
             if let checksums = entry.checksums, urlString.hasSuffix("/" + checksums.entryName) {

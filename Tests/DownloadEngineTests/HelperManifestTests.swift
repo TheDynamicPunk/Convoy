@@ -59,7 +59,7 @@ final class HelperManifestTests: XCTestCase {
 
     func testAcceptsADownloadMatchingItsRecordedHash() throws {
         let payload = Data("pretend this is yt-dlp".utf8)
-        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let hash = SHA256.hash(data: payload).hexString
         let artifact = HelperManifest.Artifact(url: "https://example.com/x", sha256: hash)
 
         XCTAssertNoThrow(
@@ -86,7 +86,7 @@ final class HelperManifestTests: XCTestCase {
     /// worse, accept bad ones.
     func testTheFileAndInMemoryChecksAgree() throws {
         let payload = Data((0..<(3 * 1024 * 1024)).map { UInt8($0 % 251) })
-        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let hash = SHA256.hash(data: payload).hexString
         let artifact = HelperManifest.Artifact(url: "https://example.com/x", sha256: hash)
 
         let fileURL = FileManager.default.temporaryDirectory
