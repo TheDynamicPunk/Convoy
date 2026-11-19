@@ -2,10 +2,18 @@ import XCTest
 @testable import DownloadEngine
 
 /// Serves `body` with a Content-Length in 64 KB chunks, or fails when
-/// `failure` is set.
-private final class StubHelperProtocol: URLProtocol {
+/// `failure` is set. Shared with `HelperInstallCoreTests`, which needs the
+/// same fake helper host, so `statusCode` lets it ask for a refusal too.
+final class StubHelperProtocol: URLProtocol {
     nonisolated(unsafe) static var body = Data()
     nonisolated(unsafe) static var failure: URLError?
+    nonisolated(unsafe) static var statusCode = 200
+
+    static func reset() {
+        body = Data()
+        failure = nil
+        statusCode = 200
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -15,7 +23,7 @@ private final class StubHelperProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: failure)
             return
         }
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+        let response = HTTPURLResponse(url: request.url!, statusCode: Self.statusCode, httpVersion: "HTTP/1.1",
                                        headerFields: ["Content-Length": "\(Self.body.count)"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         var offset = 0
@@ -46,7 +54,7 @@ final class ProgressDownloadTests: XCTestCase {
     }
 
     override func setUp() {
-        StubHelperProtocol.failure = nil
+        StubHelperProtocol.reset()
     }
 
     func testReportsBytesAndReturnsTheFile() async throws {

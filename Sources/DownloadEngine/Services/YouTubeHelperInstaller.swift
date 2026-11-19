@@ -83,7 +83,7 @@ public actor YouTubeHelperInstaller {
         try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
         let manifest = try await listedHelpers(progress: progress)
 
-        let serverCurrent = isInstalledFileCurrent(potPath, helper: "bgutil-pot", manifest: manifest)
+        let serverCurrent = HelperInstallCore.isInstalledFileCurrent(potPath, helper: "bgutil-pot", manifest: manifest)
         let pluginPresent = FileManager.default.fileExists(atPath: potPluginMarkerPath)
         if serverCurrent && pluginPresent {
             return HelperUpdateResult(updated: [])
@@ -93,9 +93,9 @@ public actor YouTubeHelperInstaller {
         if !serverCurrent {
             let server = HelperInstallStep(name: "bot-check helper", step: 1, stepCount: stepCount, emit: progress)
             server.downloading(0, of: nil)
-            let pot = try await downloadVerified(helper: "bgutil-pot", manifest: manifest, onBytes: server.onBytes)
+            let pot = try await HelperInstallCore.downloadVerified(helper: "bgutil-pot", manifest: manifest, onBytes: server.onBytes)
             server.installing()
-            try installVerifiedBinary(from: pot.url, to: potPath)
+            try HelperInstallCore.installVerifiedBinary(from: pot.url, to: potPath)
         }
         let plugin = HelperInstallStep(name: "its yt-dlp plugin", step: stepCount, stepCount: stepCount, emit: progress)
         try await downloadAndInstallPotPlugin(manifest: manifest, step: plugin)
@@ -120,16 +120,6 @@ public actor YouTubeHelperInstaller {
               let listed = manifest.version(of: "yt-dlp"),
               let installed = try? await runVersionCheck() else { return false }
         return installed == listed
-    }
-
-    /// Single-file helpers are installed byte for byte as downloaded, so the
-    /// listed SHA-256 identifies the installed copy too.
-    private func isInstalledFileCurrent(_ path: String, helper: String, manifest: HelperManifest) -> Bool {
-        guard FileManager.default.fileExists(atPath: path),
-              let artifact = try? manifest.artifact(for: helper) else { return false }
-        return (try? HelperManifestStore.shared.check(
-            fileAt: URL(fileURLWithPath: path), against: artifact, helper: helper
-        )) != nil
     }
 
     /// The list of what to install, from inside the app bundle.
@@ -160,7 +150,7 @@ public actor YouTubeHelperInstaller {
 
         // Only what differs from the list is downloaded.
         let needsYtDlp = !(await isYtDlpCurrent(manifest: manifest))
-        let needsQuickJS = !isInstalledFileCurrent(quickjsPath, helper: "quickjs", manifest: manifest)
+        let needsQuickJS = !HelperInstallCore.isInstalledFileCurrent(quickjsPath, helper: "quickjs", manifest: manifest)
         let stepCount = (needsYtDlp ? 1 : 0) + (needsQuickJS ? 1 : 0)
         var updated: [String] = []
 
@@ -236,7 +226,7 @@ public actor YouTubeHelperInstaller {
     /// PO-Token provider.
     private func downloadAndInstallYtDlp(manifest: HelperManifest, step: HelperInstallStep) async throws {
         step.downloading(0, of: nil)
-        let (tempZipURL, _) = try await downloadVerified(helper: "yt-dlp", manifest: manifest, onBytes: step.onBytes)
+        let (tempZipURL, _) = try await HelperInstallCore.downloadVerified(helper: "yt-dlp", manifest: manifest, onBytes: step.onBytes)
         step.installing()
 
         let scratchDir = FileManager.default.temporaryDirectory
@@ -376,13 +366,7 @@ public actor YouTubeHelperInstaller {
         // Recursive: quarantine lands on every extracted file, and the
         // launcher loading a quarantined dylib out of _internal/ fails just as
         // hard as a quarantined launcher would.
-        let stripQuarantine = Process()
-        stripQuarantine.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
-        stripQuarantine.arguments = ["-dr", "com.apple.quarantine", ytdlpDirectory.path]
-        stripQuarantine.standardOutput = FileHandle.nullDevice
-        stripQuarantine.standardError = FileHandle.nullDevice
-        try? stripQuarantine.run()
-        stripQuarantine.waitUntilExit()
+        HelperInstallCore.stripQuarantine(atPath: ytdlpDirectory.path, recursive: true)
 
         // Retire the old single-file install so two copies do not drift, and
         // so ytdlpPath's fallback cannot resurrect a stale one.
@@ -391,7 +375,7 @@ public actor YouTubeHelperInstaller {
 
     private func downloadAndInstallPotPlugin(manifest: HelperManifest, step: HelperInstallStep) async throws {
         step.downloading(0, of: nil)
-        let (tempZipURL, _) = try await downloadVerified(
+        let (tempZipURL, _) = try await HelperInstallCore.downloadVerified(
             helper: "bgutil-pot-plugin", manifest: manifest, onBytes: step.onBytes
         )
         step.installing()
@@ -454,72 +438,10 @@ public actor YouTubeHelperInstaller {
     /// stronger check regardless.
     private func downloadAndInstallQuickJS(manifest: HelperManifest, step: HelperInstallStep) async throws {
         step.downloading(0, of: nil)
-        let (tempURL, _) = try await downloadVerified(helper: "quickjs", manifest: manifest, onBytes: step.onBytes)
+        let (tempURL, _) = try await HelperInstallCore.downloadVerified(helper: "quickjs", manifest: manifest, onBytes: step.onBytes)
         step.installing()
         try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
-        try installVerifiedBinary(from: tempURL, to: quickjsPath)
-    }
-
-    /// Downloads one artifact named by the signed manifest and hands back a
-    /// temporary file, having confirmed its SHA-256 first.
-    ///
-    /// Everything that installs a helper goes through here. Keeping it a
-    /// single choke point is deliberate: the previous shape had four separate
-    /// download paths, and the one that pre-dated the others quietly lacked
-    /// the quarantine handling the rest had. A check that has to be remembered
-    /// in four places is a check that will eventually be missing from one.
-    ///
-    /// The caller gets a temp file rather than an installed one, so an
-    /// artifact that fails verification is never written to the install
-    /// directory and never handed to `unzip`.
-    private func downloadVerified(
-        helper: String,
-        manifest: HelperManifest,
-        onBytes: @escaping @Sendable (Int64, Int64?) -> Void
-    ) async throws -> (url: URL, artifact: HelperManifest.Artifact) {
-        let artifact = try manifest.artifact(for: helper)
-        guard let url = URL(string: artifact.url) else { throw URLError(.badURL) }
-
-        let (tempURL, response) = try await ProgressDownload.run(url, onBytes: onBytes)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            try? FileManager.default.removeItem(at: tempURL)
-            throw URLError(.badServerResponse)
-        }
-
-        do {
-            try HelperManifestStore.shared.check(fileAt: tempURL, against: artifact, helper: helper)
-        } catch {
-            // Remove it immediately. Leaving a rejected artifact in the temp
-            // directory invites some later code path from picking it up.
-            try? FileManager.default.removeItem(at: tempURL)
-            throw error
-        }
-        return (tempURL, artifact)
-    }
-
-    private func installVerifiedBinary(from tempURL: URL, to destinationPath: String) throws {
-        try? FileManager.default.removeItem(atPath: destinationPath)
-        try FileManager.default.moveItem(at: tempURL, to: URL(fileURLWithPath: destinationPath))
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationPath)
-
-        // GitHub-downloaded
-        // binaries can carry a com.apple.quarantine xattr that trips
-        // Gatekeeper's "cannot be opened because the developer cannot be
-        // verified" refusal the first time we try to exec it — confirmed as
-        // a real, reported problem for this exact yt-dlp_macos binary
-        // (yt-dlp/yt-dlp#2374), not a hypothetical. A dev machine that's
-        // already run these binaries before won't show this; a fresh
-        // install hitting it on someone's first-ever YouTube click would.
-        // Best-effort — if this macOS configuration never set the xattr in
-        // the first place, `xattr -d` exits non-zero for "no such xattr",
-        // which is fine to ignore.
-        let stripQuarantine = Process()
-        stripQuarantine.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
-        stripQuarantine.arguments = ["-d", "com.apple.quarantine", destinationPath]
-        stripQuarantine.standardOutput = FileHandle.nullDevice
-        stripQuarantine.standardError = FileHandle.nullDevice
-        try? stripQuarantine.run()
-        stripQuarantine.waitUntilExit()
+        try HelperInstallCore.installVerifiedBinary(from: tempURL, to: quickjsPath)
     }
 
     private func runVersionCheck() async throws -> String {
