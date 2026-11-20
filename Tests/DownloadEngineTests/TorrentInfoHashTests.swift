@@ -11,8 +11,8 @@ final class TorrentInfoHashTests: XCTestCase {
 
     // Computed independently with Python's hashlib / base64 over a known info
     // dictionary (the same one `TorrentFileTests` uses as fixture A).
-    private let hex = "3facef60ceef085adc8d0bad64202f88ef953279"
-    private let base32 = "H6WO6YGO54EFVXENBOWWIIBPRDXZKMTZ"
+    private let hex = TorrentFixtures.hashA
+    private let base32 = TorrentFixtures.base32A
 
     func testHexIsAcceptedAndLowercased() {
         XCTAssertEqual(TorrentInfoHash(hex: hex)?.hex, hex)
@@ -53,5 +53,19 @@ final class TorrentInfoHashTests: XCTestCase {
         let fromHex = try XCTUnwrap(TorrentInfoHash(hex: hex))
         let fromBase32 = try XCTUnwrap(TorrentInfoHash(base32: base32))
         XCTAssertEqual(Set([fromHex, fromBase32]).count, 1)
+    }
+
+    func testTrackerCleaningDeduplicatesSchemeAndHostCaseInsensitivelyWhileKeepingPathCaseSensitive() {
+        let cleaned = TorrentTrackers.cleaned([
+            "HTTP://Tracker.Example/ann?key=AbC",
+            "http://tracker.example/ann?key=AbC",
+            "http://tracker.example/ann?key=abc",
+            "http://tracker.example/Ann?key=AbC",
+        ])
+        XCTAssertEqual(cleaned, [
+            "HTTP://Tracker.Example/ann?key=AbC",
+            "http://tracker.example/ann?key=abc",
+            "http://tracker.example/Ann?key=AbC",
+        ])
     }
 }

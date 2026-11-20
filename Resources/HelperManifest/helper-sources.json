@@ -20,6 +20,12 @@
       },
       "version" : "v0.16.2"
     },
+    "rqbit" : {
+      "urls" : {
+        "universal" : "https:\/\/github.com\/ikatson\/rqbit\/releases\/download\/v9.1.0\/rqbit-osx-universal"
+      },
+      "version" : "v9.1.0"
+    },
     "yt-dlp" : {
       "checksums" : {
         "entryName" : "yt-dlp_macos.zip",

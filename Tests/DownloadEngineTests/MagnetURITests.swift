@@ -5,8 +5,8 @@ import XCTest
 /// and where to ask for peers. Nothing is fetched.
 final class MagnetURITests: XCTestCase {
 
-    private let hex = "3facef60ceef085adc8d0bad64202f88ef953279"
-    private let base32 = "H6WO6YGO54EFVXENBOWWIIBPRDXZKMTZ"
+    private let hex = TorrentFixtures.hashA
+    private let base32 = TorrentFixtures.base32A
     /// A BEP 52 multihash: "1220" says "SHA-256, 32 bytes", then the digest.
     private let v2Digest = String(repeating: "ab", count: 32)
 
@@ -78,6 +78,14 @@ final class MagnetURITests: XCTestCase {
             "magnet:?xt=urn:btih:\(hex)&tr=http://a.example/x&tr=notaurl&tr=http://b.example/x&tr=http://a.example/x&tr="
         )
         XCTAssertEqual(magnet.trackers, ["http://a.example/x", "http://b.example/x"])
+    }
+
+    func testPlusInTrackerURLIsPreservedWhilePlusInDisplayNameBecomesSpace() throws {
+        let magnet = try MagnetURI(
+            "magnet:?xt=urn:btih:\(hex)&dn=A+B&tr=https://tracker.example/ann?key=a+b"
+        )
+        XCTAssertEqual(magnet.displayName, "A B")
+        XCTAssertEqual(magnet.trackers, ["https://tracker.example/ann?key=a+b"])
     }
 
     // MARK: - Version 2 hashes

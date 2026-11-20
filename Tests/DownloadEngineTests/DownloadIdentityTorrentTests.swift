@@ -11,8 +11,8 @@ import XCTest
 /// or the other way round.
 final class DownloadIdentityTorrentTests: XCTestCase {
 
-    private let hashA = TorrentInfoHash(hex: "3facef60ceef085adc8d0bad64202f88ef953279")!
-    private let hashB = TorrentInfoHash(hex: "2716855658cc83fb5cdeb6cf708a8dab27641cef")!
+    private let hashA = TorrentInfoHash(hex: TorrentFixtures.hashA)!
+    private let hashB = TorrentInfoHash(hex: TorrentFixtures.hashB)!
 
     private func identity(_ url: String, name: String, hash: TorrentInfoHash? = nil, size: Int64? = nil) -> DownloadIdentity {
         DownloadIdentity(url: URL(string: url)!, name: name, size: size, torrentInfoHash: hash)
@@ -57,14 +57,13 @@ final class DownloadIdentityTorrentTests: XCTestCase {
     /// link and as a `.torrent` file must be recognised as one download. The
     /// magnet carries no name, so nothing but the hash can make these equal.
     func testAMagnetAndATorrentFileForTheSameContentAreDuplicates() throws {
-        let torrent = "d8:announce20:http://t.example/ann4:infod6:lengthi5e4:name3:abc12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
-        let file = try TorrentFile(Data(torrent.utf8))
-        let magnet = try MagnetURI("magnet:?xt=urn:btih:H6WO6YGO54EFVXENBOWWIIBPRDXZKMTZ")
+        let file = try TorrentFile(TorrentFixtures.dataA)
+        let magnet = try MagnetURI("magnet:?xt=urn:btih:\(TorrentFixtures.base32A)")
 
         let fromFile = DownloadIdentity(
             url: URL(fileURLWithPath: "/tmp/abc.torrent"), name: file.name, torrentInfoHash: file.infoHash)
         let fromMagnet = DownloadIdentity(
-            url: URL(string: "magnet:?xt=urn:btih:H6WO6YGO54EFVXENBOWWIIBPRDXZKMTZ")!,
+            url: URL(string: "magnet:?xt=urn:btih:\(TorrentFixtures.base32A)")!,
             name: magnet.displayName ?? "magnet link", torrentInfoHash: magnet.infoHash)
 
         XCTAssertNotEqual(fromFile.name, fromMagnet.name)

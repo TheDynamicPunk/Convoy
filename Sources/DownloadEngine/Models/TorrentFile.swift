@@ -28,6 +28,16 @@ struct TorrentFile: Equatable, Sendable {
         /// has one entry whose path is just its name.
         let path: [String]
         let length: Int64
+        /// BEP 47 padding entry (`attr` containing `"p"`). Kept in `files` so
+        /// file indexes stay aligned with the engine's `only_files` and
+        /// `file_progress`, but excluded from `totalSize`.
+        let isPadding: Bool
+
+        init(path: [String], length: Int64, isPadding: Bool = false) {
+            self.path = path
+            self.length = length
+            self.isPadding = isPadding
+        }
 
         var displayPath: String { path.joined(separator: "/") }
     }
@@ -43,6 +53,10 @@ struct TorrentFile: Equatable, Sendable {
     let isMultiFile: Bool
     /// Private torrents forbid peer sources other than their own trackers.
     let isPrivate: Bool
+    /// The bytes this was read from, as received. A torrent resolved from a
+    /// magnet link is saved and added from these, so what the engine is given
+    /// is exactly what the swarm sent, and its hash is unchanged.
+    let source: Data
 
     init(_ data: Data) throws {
         // A copy, so offsets into it are the offsets the reader reports even
@@ -65,7 +79,7 @@ struct TorrentFile: Equatable, Sendable {
             throw TorrentFileError.v2Only
         }
 
-        guard let nameValue = info["name"] else { throw TorrentFileError.missingField("name") }
+        guard let nameValue = info["name.utf-8"] ?? info["name"] else { throw TorrentFileError.missingField("name") }
         guard let name = nameValue.string else { throw TorrentFileError.invalidField("name") }
         try Self.validate(component: name)
 
@@ -93,7 +107,7 @@ struct TorrentFile: Equatable, Sendable {
         }
 
         var total: Int64 = 0
-        for entry in entries {
+        for entry in entries where !entry.isPadding {
             let (sum, overflow) = total.addingReportingOverflow(entry.length)
             if overflow { throw TorrentFileError.invalidField("length") }
             total = sum
@@ -112,18 +126,22 @@ struct TorrentFile: Equatable, Sendable {
         self.trackers = TorrentTrackers.cleaned(announced)
         self.isMultiFile = multiFile
         self.isPrivate = info["private"]?.integer == 1
+        self.source = input
     }
 
     private static func entry(from value: Bencode.Value) throws -> Entry {
         guard case .dictionary = value else { throw TorrentFileError.invalidField("files") }
         guard let length = value["length"]?.integer, length >= 0 else { throw TorrentFileError.invalidField("length") }
-        guard let components = value["path"]?.list, !components.isEmpty else { throw TorrentFileError.invalidField("path") }
+        guard let components = (value["path.utf-8"] ?? value["path"])?.list, !components.isEmpty else {
+            throw TorrentFileError.invalidField("path")
+        }
         let path = try components.map { component -> String in
             guard let text = component.string else { throw TorrentFileError.invalidField("path") }
             try validate(component: text)
             return text
         }
-        return Entry(path: path, length: length)
+        let isPadding = value["attr"]?.string?.contains("p") == true
+        return Entry(path: path, length: length, isPadding: isPadding)
     }
 
     private static func validate(component: String) throws {

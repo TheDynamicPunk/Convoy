@@ -163,6 +163,19 @@ let upstreams: [Upstream] = [
         assets: ["universal": "bgutil-ytdlp-pot-provider-rs.zip"],
         checksums: nil
     ),
+    Upstream(
+        // The BitTorrent engine. One bare universal Mach-O (x86_64 + arm64),
+        // ~36 MB, so a single pin covers both architectures.
+        //
+        // rqbit publishes no checksum list, so there is nothing to verify the
+        // download against here. The pin is the SHA-256 computed from the
+        // download, and the maintainer compares it with the digest GitHub
+        // shows for the release asset before shipping it.
+        name: "rqbit",
+        repo: "ikatson/rqbit",
+        assets: ["universal": "rqbit-osx-universal"],
+        checksums: nil
+    ),
 ]
 
 /// Current release tag for a GitHub repo.

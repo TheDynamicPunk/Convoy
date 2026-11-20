@@ -28,14 +28,9 @@ struct MagnetURI: Equatable, Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.lowercased().hasPrefix("magnet:") else { throw MagnetURIError.notAMagnetLink }
 
-        // A plus in a query means a space and an encoded one (%2B) means a
-        // plus. Settling the first before anything is decoded keeps them
-        // apart; afterwards they would look the same.
-        let spaced = trimmed.replacingOccurrences(of: "+", with: "%20")
-
         // Links written by hand skip the percent-encoding (spaces, brackets,
         // non-ASCII), so the strict reading would lose them.
-        guard let components = URLComponents(string: spaced, encodingInvalidCharacters: true),
+        guard let components = URLComponents(string: trimmed, encodingInvalidCharacters: true),
               components.scheme?.lowercased() == "magnet" else {
             throw MagnetURIError.notAMagnetLink
         }
@@ -74,9 +69,15 @@ struct MagnetURI: Equatable, Sendable {
         }
         infoHashV2 = v2
 
-        let name = items.first { $0.name == "dn" }?.value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        displayName = (name?.isEmpty == false) ? name : nil
+        // A plus in `dn` means a space and an encoded one (%2B) means a plus.
+        // Scoped to `dn` only so literal `+` characters in `tr` URLs stay intact.
+        let rawName = (components.percentEncodedQueryItems ?? [])
+            .first { $0.name.lowercased() == "dn" }?.value
+        let decodedName = rawName.map { raw -> String in
+            let withSpaces = raw.replacingOccurrences(of: "+", with: "%20")
+            return withSpaces.removingPercentEncoding ?? withSpaces
+        }?.trimmingCharacters(in: .whitespacesAndNewlines)
+        displayName = (decodedName?.isEmpty == false) ? decodedName : nil
 
         trackers = TorrentTrackers.cleaned(items.filter { $0.name == "tr" }.map(\.value))
     }

@@ -1,43 +1,6 @@
 import XCTest
 @testable import DownloadEngine
 
-/// Serves `body` with a Content-Length in 64 KB chunks, or fails when
-/// `failure` is set. Shared with `HelperInstallCoreTests`, which needs the
-/// same fake helper host, so `statusCode` lets it ask for a refusal too.
-final class StubHelperProtocol: URLProtocol {
-    nonisolated(unsafe) static var body = Data()
-    nonisolated(unsafe) static var failure: URLError?
-    nonisolated(unsafe) static var statusCode = 200
-
-    static func reset() {
-        body = Data()
-        failure = nil
-        statusCode = 200
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        if let failure = Self.failure {
-            client?.urlProtocol(self, didFailWithError: failure)
-            return
-        }
-        let response = HTTPURLResponse(url: request.url!, statusCode: Self.statusCode, httpVersion: "HTTP/1.1",
-                                       headerFields: ["Content-Length": "\(Self.body.count)"])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        var offset = 0
-        while offset < Self.body.count {
-            let end = min(offset + 64 << 10, Self.body.count)
-            client?.urlProtocol(self, didLoad: Self.body.subdata(in: offset..<end))
-            offset = end
-        }
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-}
-
 private final class ByteLog: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [(Int64, Int64?)] = []

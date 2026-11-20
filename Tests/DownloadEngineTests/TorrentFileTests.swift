@@ -8,25 +8,7 @@ import XCTest
 /// check the parser against something other than itself.
 final class TorrentFileTests: XCTestCase {
 
-    // MARK: - Fixtures
-
-    private let pieces = "6:pieces20:aaaaaaaaaaaaaaaaaaaa"
-
-    /// Fixture A: a single file, canonical key order.
-    private let infoA = "d6:lengthi5e4:name3:abc12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaae"
-    private let torrentA = "d8:announce20:http://t.example/ann4:infod6:lengthi5e4:name3:abc12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
-    private let hashA = "3facef60ceef085adc8d0bad64202f88ef953279"
-    private let base32A = "H6WO6YGO54EFVXENBOWWIIBPRDXZKMTZ"
-
-    /// Fixture B: two files, one in a sub-folder, trackers only in `announce-list`.
-    private let torrentB = "d13:announce-listll19:http://t1.example/a19:http://t2.example/ael19:udp://t3.example:80ee4:infod5:filesld6:lengthi3e4:pathl1:a5:b.txteed6:lengthi4e4:pathl5:c.bineee4:name4:pack12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
-    private let hashB = "2716855658cc83fb5cdeb6cf708a8dab27641cef"
-
-    /// Fixture C: the same content as A, but the `info` keys are not in sorted
-    /// order. Hashing a re-encoded copy would give a different answer from
-    /// hashing the bytes as written, and only the second is right.
-    private let torrentC = "d4:infod4:name3:abc6:lengthi5e12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
-    private let hashC = "89e247aba9b108e9a4667cb926b66def9b0b2c32"
+    // MARK: - Fixtures (shared: see TorrentFixtures)
 
     private func torrent(info: String) -> Data { Data("d4:info\(info)e".utf8) }
 
@@ -40,9 +22,9 @@ final class TorrentFileTests: XCTestCase {
     // MARK: - A single file
 
     func testReadsASingleFileTorrent() throws {
-        let file = try TorrentFile(Data(torrentA.utf8))
+        let file = try TorrentFile(Data(TorrentFixtures.torrentA.utf8))
 
-        XCTAssertEqual(file.infoHash.hex, hashA)
+        XCTAssertEqual(file.infoHash.hex, TorrentFixtures.hashA)
         XCTAssertEqual(file.name, "abc")
         XCTAssertEqual(file.files, [TorrentFile.Entry(path: ["abc"], length: 5)])
         XCTAssertEqual(file.totalSize, 5)
@@ -54,9 +36,9 @@ final class TorrentFileTests: XCTestCase {
     // MARK: - Several files
 
     func testReadsAMultiFileTorrentInOrder() throws {
-        let file = try TorrentFile(Data(torrentB.utf8))
+        let file = try TorrentFile(Data(TorrentFixtures.torrentB.utf8))
 
-        XCTAssertEqual(file.infoHash.hex, hashB)
+        XCTAssertEqual(file.infoHash.hex, TorrentFixtures.hashB)
         XCTAssertEqual(file.name, "pack")
         XCTAssertEqual(file.files, [
             TorrentFile.Entry(path: ["a", "b.txt"], length: 3),
@@ -68,33 +50,93 @@ final class TorrentFileTests: XCTestCase {
     }
 
     func testTrackersFromBothAnnounceFieldsAreMergedWithoutRepeats() throws {
-        let data = Data("d8:announce19:http://t1.example/a13:announce-listll19:http://t1.example/a19:http://t2.example/aee4:info\(infoA)e".utf8)
+        let data = Data("d8:announce19:http://t1.example/a13:announce-listll19:http://t1.example/a19:http://t2.example/aee4:info\(TorrentFixtures.infoA)e".utf8)
         XCTAssertEqual(try TorrentFile(data).trackers, ["http://t1.example/a", "http://t2.example/a"])
 
         XCTAssertEqual(
-            try TorrentFile(Data(torrentB.utf8)).trackers,
+            try TorrentFile(Data(TorrentFixtures.torrentB.utf8)).trackers,
             ["http://t1.example/a", "http://t2.example/a", "udp://t3.example:80"]
         )
     }
 
     func testAPrivateTorrentIsMarkedPrivate() throws {
-        let info = "d6:lengthi5e4:name3:abc12:piece lengthi16384e\(pieces)7:privatei1ee"
+        let info = "d6:lengthi5e4:name3:abc12:piece lengthi16384e\(TorrentFixtures.pieces)7:privatei1ee"
         XCTAssertTrue(try TorrentFile(torrent(info: info)).isPrivate)
+    }
+
+    func testBEP47PaddingFilesStayIndexedButAreExcludedFromTotalSize() throws {
+        let files =
+            "d6:lengthi10e4:pathl5:a.binee"
+            + "d4:attr1:p6:lengthi6e4:pathl4:.pad1:6ee"
+            + "d4:attr1:x6:lengthi4e4:pathl5:b.binee"
+            + "d4:attr2:ph6:lengthi12e4:pathl4:.pad2:12ee"
+        let info = "d5:filesl\(files)e4:name4:pack12:piece lengthi16384e\(TorrentFixtures.pieces)e"
+
+        let file = try TorrentFile(torrent(info: info))
+
+        XCTAssertEqual(file.files.count, 4)
+        XCTAssertEqual(file.files.map(\.isPadding), [false, true, false, true])
+        XCTAssertEqual(file.files.map(\.displayPath), ["a.bin", ".pad/6", "b.bin", ".pad/12"])
+        XCTAssertEqual(file.totalSize, 14)
+    }
+
+    func testUTF8NameAndPathKeysTakePrecedenceOverLegacyKeys() throws {
+        let utf8Name = "café"
+        let utf8ByteCount = utf8Name.utf8.count
+        let singleWithBoth = "d6:lengthi5e4:name6:legacy10:name.utf-8\(utf8ByteCount):\(utf8Name)12:piece lengthi16384e\(TorrentFixtures.pieces)e"
+        let single = try TorrentFile(torrent(info: singleWithBoth))
+        XCTAssertEqual(single.name, utf8Name)
+        XCTAssertEqual(single.files, [TorrentFile.Entry(path: [utf8Name], length: 5)])
+
+        let singleUTF8Only = "d6:lengthi5e10:name.utf-8\(utf8ByteCount):\(utf8Name)12:piece lengthi16384e\(TorrentFixtures.pieces)e"
+        XCTAssertEqual(try TorrentFile(torrent(info: singleUTF8Only)).name, utf8Name)
+
+        let utf8File = "café.txt"
+        let multi = "d5:filesld6:lengthi3e4:pathl7:old.txte10:path.utf-8l3:dir\(utf8File.utf8.count):\(utf8File)eee10:name.utf-8\(utf8ByteCount):\(utf8Name)12:piece lengthi16384e\(TorrentFixtures.pieces)e"
+        let parsedMulti = try TorrentFile(torrent(info: multi))
+        XCTAssertEqual(parsedMulti.name, utf8Name)
+        XCTAssertEqual(parsedMulti.files, [TorrentFile.Entry(path: ["dir", utf8File], length: 3)])
+    }
+
+    // MARK: - The bytes it was read from
+
+    /// A torrent resolved from a magnet link is saved, and later added, exactly
+    /// as it was received. Rebuilding it from the parsed fields would change
+    /// the bytes, and with them the hash.
+    func testKeepsTheBytesItWasReadFrom() throws {
+        XCTAssertEqual(try TorrentFile(TorrentFixtures.dataA).source, TorrentFixtures.dataA)
+    }
+
+    /// A `Data` that is a slice of a bigger buffer counts its indexes from
+    /// wherever the slice starts, which must not shift where the info
+    /// dictionary is found.
+    func testReadsATorrentThatIsASliceOfALargerBuffer() throws {
+        var padded = Data("padding before the torrent".utf8)
+        let start = padded.count
+        padded.append(TorrentFixtures.dataA)
+        padded.append(Data("and after".utf8))
+        let slice = padded[start..<(start + TorrentFixtures.dataA.count)]
+        XCTAssertNotEqual(slice.startIndex, 0)
+
+        let file = try TorrentFile(slice)
+
+        XCTAssertEqual(file.infoHash.hex, TorrentFixtures.hashA)
+        XCTAssertEqual(file.source, TorrentFixtures.dataA)
     }
 
     // MARK: - Which torrent it is
 
     /// The hash is over the bytes as they were written, not over a tidied copy.
     func testTheHashCoversTheInfoBytesAsWrittenEvenWhenTheirKeysAreOutOfOrder() throws {
-        XCTAssertEqual(try TorrentFile(Data(torrentC.utf8)).infoHash.hex, hashC)
+        XCTAssertEqual(try TorrentFile(Data(TorrentFixtures.torrentC.utf8)).infoHash.hex, TorrentFixtures.hashC)
     }
 
     /// The case duplicate detection exists for: the same content arriving once
     /// as a magnet link and once as a file.
     func testAMagnetLinkAndATorrentFileForTheSameContentHaveOneIdentity() throws {
-        let fromFile = try TorrentFile(Data(torrentA.utf8))
-        let fromBase32 = try MagnetURI("magnet:?xt=urn:btih:\(base32A)")
-        let fromHex = try MagnetURI("magnet:?xt=urn:btih:\(hashA)&dn=abc")
+        let fromFile = try TorrentFile(Data(TorrentFixtures.torrentA.utf8))
+        let fromBase32 = try MagnetURI("magnet:?xt=urn:btih:\(TorrentFixtures.base32A)")
+        let fromHex = try MagnetURI("magnet:?xt=urn:btih:\(TorrentFixtures.hashA)&dn=abc")
 
         XCTAssertEqual(fromFile.infoHash, fromBase32.infoHash)
         XCTAssertEqual(fromFile.infoHash, fromHex.infoHash)
@@ -113,29 +155,29 @@ final class TorrentFileTests: XCTestCase {
     }
 
     func testRequiredFieldsMustBePresent() {
-        assertThrows(torrent(info: "d6:lengthi5e12:piece lengthi16384e\(pieces)e"), .missingField("name"))
-        assertThrows(torrent(info: "d4:name3:abc12:piece lengthi16384e\(pieces)e"), .missingField("length or files"))
-        assertThrows(torrent(info: "d6:lengthi5e4:name3:abc\(pieces)e"), .missingField("piece length"))
+        assertThrows(torrent(info: "d6:lengthi5e12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .missingField("name"))
+        assertThrows(torrent(info: "d4:name3:abc12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .missingField("length or files"))
+        assertThrows(torrent(info: "d6:lengthi5e4:name3:abc\(TorrentFixtures.pieces)e"), .missingField("piece length"))
         assertThrows(torrent(info: "d6:lengthi5e4:name3:abc12:piece lengthi16384ee"), .missingField("pieces"))
     }
 
     func testNumbersAndPieceDataMustMakeSense() {
-        assertThrows(torrent(info: "d6:lengthi-5e4:name3:abc12:piece lengthi16384e\(pieces)e"), .invalidField("length"))
-        assertThrows(torrent(info: "d6:lengthi5e4:name3:abc12:piece lengthi0e\(pieces)e"), .invalidField("piece length"))
+        assertThrows(torrent(info: "d6:lengthi-5e4:name3:abc12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .invalidField("length"))
+        assertThrows(torrent(info: "d6:lengthi5e4:name3:abc12:piece lengthi0e\(TorrentFixtures.pieces)e"), .invalidField("piece length"))
         assertThrows(torrent(info: "d6:lengthi5e4:name3:abc12:piece lengthi16384e6:pieces3:abce"), .invalidField("pieces"))
-        assertThrows(torrent(info: "d5:filesi5e4:name1:x12:piece lengthi16384e\(pieces)e"), .invalidField("files"))
+        assertThrows(torrent(info: "d5:filesi5e4:name1:x12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .invalidField("files"))
     }
 
     func testAnEmptyFileListOrAnEmptyPathIsInvalid() {
-        assertThrows(torrent(info: "d5:filesle4:name1:x12:piece lengthi16384e\(pieces)e"), .invalidField("files"))
+        assertThrows(torrent(info: "d5:filesle4:name1:x12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .invalidField("files"))
         assertThrows(
-            torrent(info: "d5:filesld6:lengthi1e4:pathleee4:name1:x12:piece lengthi16384e\(pieces)e"),
+            torrent(info: "d5:filesld6:lengthi1e4:pathleee4:name1:x12:piece lengthi16384e\(TorrentFixtures.pieces)e"),
             .invalidField("path")
         )
     }
 
     func testTotalSizesThatOverflowAreRefused() {
-        let info = "d5:filesld6:lengthi9223372036854775807e4:pathl1:aeed6:lengthi1e4:pathl1:beee4:name1:x12:piece lengthi16384e\(pieces)e"
+        let info = "d5:filesld6:lengthi9223372036854775807e4:pathl1:aeed6:lengthi1e4:pathl1:beee4:name1:x12:piece lengthi16384e\(TorrentFixtures.pieces)e"
         assertThrows(torrent(info: info), .invalidField("length"))
     }
 
@@ -143,13 +185,13 @@ final class TorrentFileTests: XCTestCase {
     /// its folder, or names something that is not a plain file name, is
     /// refused here rather than trusted to every later step.
     func testNamesThatCouldEscapeTheDownloadFolderAreRefused() {
-        assertThrows(torrent(info: "d6:lengthi5e4:name6:../etc12:piece lengthi16384e\(pieces)e"), .unsafePath("../etc"))
-        assertThrows(torrent(info: "d6:lengthi5e4:name3:a/b12:piece lengthi16384e\(pieces)e"), .unsafePath("a/b"))
-        assertThrows(torrent(info: "d6:lengthi5e4:name2:..12:piece lengthi16384e\(pieces)e"), .unsafePath(".."))
-        assertThrows(torrent(info: "d6:lengthi5e4:name1:.12:piece lengthi16384e\(pieces)e"), .unsafePath("."))
-        assertThrows(torrent(info: "d6:lengthi5e4:name0:12:piece lengthi16384e\(pieces)e"), .unsafePath(""))
+        assertThrows(torrent(info: "d6:lengthi5e4:name6:../etc12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("../etc"))
+        assertThrows(torrent(info: "d6:lengthi5e4:name3:a/b12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a/b"))
+        assertThrows(torrent(info: "d6:lengthi5e4:name2:..12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath(".."))
+        assertThrows(torrent(info: "d6:lengthi5e4:name1:.12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("."))
+        assertThrows(torrent(info: "d6:lengthi5e4:name0:12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath(""))
         assertThrows(
-            torrent(info: "d5:filesld6:lengthi1e4:pathl2:..3:bbbeee4:name1:x12:piece lengthi16384e\(pieces)e"),
+            torrent(info: "d5:filesld6:lengthi1e4:pathl2:..3:bbbeee4:name1:x12:piece lengthi16384e\(TorrentFixtures.pieces)e"),
             .unsafePath("..")
         )
     }

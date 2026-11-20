@@ -77,8 +77,14 @@ enum TorrentTrackers {
             let text = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: text),
                   let scheme = url.scheme?.lowercased(), schemes.contains(scheme),
-                  let host = url.host, !host.isEmpty,
-                  seen.insert(text).inserted else { continue }
+                  let host = url.host, !host.isEmpty else { continue }
+            // Scheme and host are case-insensitive per RFC 3986; paths and
+            // query passkeys remain case-sensitive.
+            var normalized = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            normalized?.scheme = scheme
+            normalized?.host = host.lowercased()
+            let key = normalized?.string ?? text.lowercased()
+            guard seen.insert(key).inserted else { continue }
             result.append(text)
         }
         return result
