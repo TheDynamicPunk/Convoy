@@ -1222,9 +1222,12 @@ public final class DownloadManager: ObservableObject {
                 // task.resume() rebuilds segments fresh; each finds its own
                 // partial bytes on disk via the stable id. A YouTube row's
                 // count is read from disk too (see YouTubePartialProgress).
+                let downloadKind = snap.downloadKind
+                let ytSelector: String?
+                if case .youTube(let yt) = downloadKind { ytSelector = yt.formatSelector } else { ytSelector = nil }
                 let restoredBytes = YouTubePartialProgress.restoredBytes(
                     saved: snap.downloadedBytes, total: snap.totalBytes, taskID: snap.id,
-                    formatSelector: snap.ytPageURL == nil ? nil : snap.ytFormatSelector,
+                    formatSelector: ytSelector,
                     destination: dest
                 )
                 let task = DownloadTask(
@@ -1242,20 +1245,22 @@ public final class DownloadManager: ObservableObject {
                     categoryID: snap.categoryID,
                     createdAt: snap.createdAt ?? Date()
                 )
-                if let selector = snap.ytFormatSelector, let page = snap.ytPageURL {
-                    task.configureYouTubeDownload(formatSelector: selector, pageURL: page)
-                }
-                if let sURL = snap.streamURL, let sType = snap.streamType {
+                switch downloadKind {
+                case .youTube(let yt):
+                    task.configureYouTubeDownload(formatSelector: yt.formatSelector, pageURL: yt.pageURL)
+                case .stream(let stream):
                     task.configureStreamDownload(
-                        streamURL: sURL, streamType: sType,
+                        streamURL: stream.url, streamType: stream.type,
                         customHeaders: snap.streamRequestHeaders ?? [:],
-                        representationId: snap.streamRepresentationId,
-                        bandwidth: snap.streamBandwidth,
-                        preferredAudioLanguage: snap.streamPreferredAudioLanguage,
-                        hlsAudioTracks: snap.streamHLSAudioTracks,
+                        representationId: stream.representationId,
+                        bandwidth: stream.bandwidth,
+                        preferredAudioLanguage: stream.preferredAudioLanguage,
+                        hlsAudioTracks: stream.hlsAudioTracks,
                         completedSegments: snap.streamCompletedSegments,
                         totalSegments: snap.streamTotalSegments
                     )
+                case .direct:
+                    break
                 }
                 observeStatus(of: task)
                 tasks.append(task)
@@ -1359,66 +1364,51 @@ public final class DownloadManager: ObservableObject {
     private func savePersistedTasks() {
         guard ownsDownloadList, !listIsUnreadable else { return }
         let active = tasks.compactMap { task -> PersistedDownloadTask? in
+            let statusKind: PersistedDownloadTask.Kind
             switch task.status {
             case .cancelled:
                 return nil // transient, not worth restoring
             // .failed falls through to `default` below and is persisted as
             // .active (restored as .paused, like any other interrupted
-            // task) — NOT excluded the way it used to be. A failed task can
-            // carry real partial-download progress on disk now that retry
-            // resumes in place rather than always restarting from scratch
-            // (see DownloadManager.retryFailed); dropping it here meant that
-            // progress, and the task itself, silently vanished from the list
-            // on the next launch with no way to get it back.
+            // task) so partial progress on disk survives relaunch.
             case .urlExpired:
-                return PersistedDownloadTask(
-                    id: task.id, url: task.url, destinationPath: task.destinationURL.path,
-                    originalName: task.originalName, createdAt: task.createdAt,
-                    priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
-                    kind: .urlExpired,
-                    folderIsExplicit: task.folderIsExplicit, categoryID: task.categoryID,
-                    totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
-                    etag: task.etag, lastModified: task.lastModified,
-                    lastValidatedAt: task.lastValidatedAt,
-                    referrerURL: task.referrerURL,
-                    forwardedURL: task.forwardedURL,
-                    ytFormatSelector: task.ytFormatSelector, ytPageURL: task.ytPageURL,
-                    streamURL: task.streamURL, streamType: task.streamType,
-                    streamRepresentationId: task.streamRepresentationId,
-                    streamBandwidth: task.streamBandwidth,
-                    streamPreferredAudioLanguage: task.streamPreferredAudioLanguage,
-                    streamHLSAudioTracks: task.streamHLSAudioTracks,
-                    streamCompletedSegments: task.segmentProgress?.completed,
-                    streamTotalSegments: task.segmentProgress?.total,
-                    filenameSource: task.filenameSource,
-                    streamRequestHeaders: task.streamURL == nil
-                        ? nil : persistableStreamHeaders(task.customHeaders)
-                )
+                statusKind = .urlExpired
             default:
-                return PersistedDownloadTask(
-                    id: task.id, url: task.url, destinationPath: task.destinationURL.path,
-                    originalName: task.originalName, createdAt: task.createdAt,
-                    priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
-                    kind: .active,
-                    folderIsExplicit: task.folderIsExplicit, categoryID: task.categoryID,
-                    totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
-                    etag: task.etag, lastModified: task.lastModified,
-                    lastValidatedAt: task.lastValidatedAt,
-                    referrerURL: task.referrerURL,
-                    forwardedURL: task.forwardedURL,
-                    ytFormatSelector: task.ytFormatSelector, ytPageURL: task.ytPageURL,
-                    streamURL: task.streamURL, streamType: task.streamType,
-                    streamRepresentationId: task.streamRepresentationId,
-                    streamBandwidth: task.streamBandwidth,
-                    streamPreferredAudioLanguage: task.streamPreferredAudioLanguage,
-                    streamHLSAudioTracks: task.streamHLSAudioTracks,
-                    streamCompletedSegments: task.segmentProgress?.completed,
-                    streamTotalSegments: task.segmentProgress?.total,
-                    filenameSource: task.filenameSource,
-                    streamRequestHeaders: task.streamURL == nil
-                        ? nil : persistableStreamHeaders(task.customHeaders)
-                )
+                statusKind = .active
             }
+            let youTube: DownloadKind.YouTube?
+            let stream: DownloadKind.Stream?
+            switch task.kind {
+            case .direct:
+                youTube = nil; stream = nil
+            case .youTube(let yt):
+                youTube = yt; stream = nil
+            case .stream(let s):
+                youTube = nil; stream = s
+            }
+            return PersistedDownloadTask(
+                id: task.id, url: task.url, destinationPath: task.destinationURL.path,
+                originalName: task.originalName, createdAt: task.createdAt,
+                priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
+                kind: statusKind,
+                folderIsExplicit: task.folderIsExplicit, categoryID: task.categoryID,
+                totalBytes: task.totalBytes, downloadedBytes: task.downloadedBytes,
+                etag: task.etag, lastModified: task.lastModified,
+                lastValidatedAt: task.lastValidatedAt,
+                referrerURL: task.referrerURL,
+                forwardedURL: task.forwardedURL,
+                ytFormatSelector: youTube?.formatSelector, ytPageURL: youTube?.pageURL,
+                streamURL: stream?.url, streamType: stream?.type,
+                streamRepresentationId: stream?.representationId,
+                streamBandwidth: stream?.bandwidth,
+                streamPreferredAudioLanguage: stream?.preferredAudioLanguage,
+                streamHLSAudioTracks: stream?.hlsAudioTracks,
+                streamCompletedSegments: task.segmentProgress?.completed,
+                streamTotalSegments: task.segmentProgress?.total,
+                filenameSource: task.filenameSource,
+                streamRequestHeaders: stream == nil
+                    ? nil : persistableStreamHeaders(task.customHeaders)
+            )
         }
         let completed = completedTasks.map { task in
             PersistedDownloadTask(
@@ -1536,6 +1526,26 @@ struct PersistedDownloadTask: Codable {
     /// (which is also every snapshot written while these lived in the
     /// Keychain instead).
     let streamRequestHeaders: [String: String]?
+
+    /// Decodes the persisted flat optional clusters into an explicit
+    /// `DownloadKind` while keeping the on-disk `downloads.json` format
+    /// unchanged for older snapshots.
+    var downloadKind: DownloadKind {
+        if let selector = ytFormatSelector, let page = ytPageURL {
+            return .youTube(.init(formatSelector: selector, pageURL: page))
+        }
+        if let url = streamURL, let type = streamType {
+            return .stream(.init(
+                url: url,
+                type: type,
+                representationId: streamRepresentationId,
+                bandwidth: streamBandwidth,
+                preferredAudioLanguage: streamPreferredAudioLanguage,
+                hlsAudioTracks: streamHLSAudioTracks
+            ))
+        }
+        return .direct
+    }
 }
 
 /// Headers that may be written to downloads.json: only what a resumed

@@ -117,8 +117,16 @@ public final class DownloadTask: ObservableObject, Identifiable {
     /// yt-dlp reports only as a byte count.
     @Published public private(set) var segmentMap: SegmentMap?
 
+    /// Which engine drives this task and its engine-specific configuration.
+    public private(set) var kind: DownloadKind = .direct
+
     /// True when the finished size cannot be known until the download ends.
-    public var hasUnknownTotalSize: Bool { streamURL != nil }
+    public var hasUnknownTotalSize: Bool {
+        switch kind {
+        case .stream: return true
+        case .direct, .youTube: return false
+        }
+    }
 
     /// Segments done and expected, for rows that want to show the count.
     public var segmentProgress: (completed: Int, total: Int)? {
@@ -420,43 +428,19 @@ public final class DownloadTask: ObservableObject, Identifiable {
 
         status = .starting
 
-        // YouTube downloads are driven by yt-dlp rather than this engine's
-        // probe/segment path — see YouTubeDownloader for the measurements that
-        // forced that (SABR leaves the web client with no media formats, the
-        // clients that do return direct URLs are authorized for only ~20% of
-        // the stream, and the formats that actually work are fragmented HLS
-        // that a byte-range downloader can't fetch at all).
-        if ytFormatSelector != nil {
-            do {
-                guard !markDestinationMissingIfNeeded() else { return }
-                try await runYouTubeDownload()
-            } catch {
-                stopSpeedTimer()
-                // pause()/cancel() already own the terminal state when they're
-                // what stopped the process.
-                if case DownloadError.cancelled = error {
-                    return
-                }
-                guard status != .paused, status != .cancelled else { return }
-                status = .failed(error)
-                self.error = error
-            }
+        switch kind {
+        case .youTube(let youTube):
+            // YouTube downloads are driven by yt-dlp rather than this engine's
+            // probe/segment path — see YouTubeDownloader for the measurements
+            // that forced that.
+            await runExternalEngine { try await runYouTubeDownload(youTube) }
             return
-        }
-
-        // Native HLS/DASH stream download — segment-aware, no yt-dlp.
-        if streamURL != nil {
-            do {
-                guard !markDestinationMissingIfNeeded() else { return }
-                try await runStreamDownload()
-            } catch {
-                stopSpeedTimer()
-                if case DownloadError.cancelled = error { return }
-                guard status != .paused, status != .cancelled else { return }
-                status = .failed(error)
-                self.error = error
-            }
+        case .stream(let stream):
+            // Native HLS/DASH stream download — segment-aware, no yt-dlp.
+            await runExternalEngine { try await runStreamDownload(stream) }
             return
+        case .direct:
+            break
         }
 
 
@@ -682,40 +666,63 @@ public final class DownloadTask: ObservableObject, Identifiable {
         }
     }
 
-    // MARK: - yt-dlp-driven download (YouTube)
-    //
-    // Set together for a YouTube download; nil for every other task, which
-    // keeps using the probe/segment engine untouched. `ytFormatSelector` is a
-    // yt-dlp `-f` expression and `ytPageURL` the watch page (yt-dlp re-resolves
-    // fresh stream URLs itself each run, so nothing here can expire).
-    public private(set) var ytFormatSelector: String?
-    public private(set) var ytPageURL: URL?
+    /// Shared destination check and failure tail for every non-direct engine
+    /// (YouTube, native streams, and future engines). `pause()`/`cancel()` own
+    /// the terminal state when they stop the run; any other error marks failed.
+    private func runExternalEngine(_ body: () async throws -> Void) async {
+        do {
+            guard !markDestinationMissingIfNeeded() else { return }
+            try await body()
+        } catch {
+            stopSpeedTimer()
+            if case DownloadError.cancelled = error { return }
+            guard status != .paused, status != .cancelled else { return }
+            status = .failed(error)
+            self.error = error
+        }
+    }
+
+    // MARK: - Engine-specific accessors (projected from `kind`)
+
+    public var ytFormatSelector: String? {
+        if case .youTube(let yt) = kind { return yt.formatSelector }
+        return nil
+    }
+    public var ytPageURL: URL? {
+        if case .youTube(let yt) = kind { return yt.pageURL }
+        return nil
+    }
 
     /// Links this task to a yt-dlp-driven download. Called at creation by
     /// DownloadManager.addYouTubeDownload, and on relaunch when restoring.
     func configureYouTubeDownload(formatSelector: String, pageURL: URL) {
-        ytFormatSelector = formatSelector
-        ytPageURL = pageURL
+        kind = .youTube(.init(formatSelector: formatSelector, pageURL: pageURL))
     }
 
-    // MARK: - Native stream download (HLS/DASH)
-    //
-    // Set together for a native stream download (HLS or DASH); nil for every
-    // other task type. The stream URL is the manifest/variant-playlist URL that
-    // the browser sniffed — StreamDownloader fetches, parses, and assembles
-    // segments from it without yt-dlp.
-    public private(set) var streamURL: URL?
-    public private(set) var streamType: String?          // "hls" or "dash"
-    public private(set) var streamRepresentationId: String?
-    public private(set) var streamBandwidth: Int?
-    /// Preferred DASH audio language captured when this task was created.
-    /// Persisting the value on the task (rather than rereading Settings on
-    /// resume) keeps a paused download's selected audio track stable.
-    public private(set) var streamPreferredAudioLanguage: String?
-    /// Candidate audio renditions for an HLS variant's AUDIO group (see
-    /// HLSAudioCandidate's doc comment) — nil/empty for a combined stream
-    /// and for DASH, which resolves its own audio independently.
-    public private(set) var streamHLSAudioTracks: [HLSAudioCandidate]?
+    public var streamURL: URL? {
+        if case .stream(let s) = kind { return s.url }
+        return nil
+    }
+    public var streamType: String? {
+        if case .stream(let s) = kind { return s.type }
+        return nil
+    }
+    public var streamRepresentationId: String? {
+        if case .stream(let s) = kind { return s.representationId }
+        return nil
+    }
+    public var streamBandwidth: Int? {
+        if case .stream(let s) = kind { return s.bandwidth }
+        return nil
+    }
+    public var streamPreferredAudioLanguage: String? {
+        if case .stream(let s) = kind { return s.preferredAudioLanguage }
+        return nil
+    }
+    public var streamHLSAudioTracks: [HLSAudioCandidate]? {
+        if case .stream(let s) = kind { return s.hlsAudioTracks }
+        return nil
+    }
 
     /// Links this task to the native stream download path. Called at creation by
     /// DownloadManager.addStreamDownload, and on relaunch when restoring.
@@ -730,13 +737,15 @@ public final class DownloadTask: ObservableObject, Identifiable {
         completedSegments: Int? = nil,
         totalSegments: Int? = nil
     ) {
-        self.streamURL = streamURL
-        self.streamType = streamType
+        self.kind = .stream(.init(
+            url: streamURL,
+            type: streamType,
+            representationId: representationId,
+            bandwidth: bandwidth,
+            preferredAudioLanguage: preferredAudioLanguage,
+            hlsAudioTracks: hlsAudioTracks
+        ))
         self.customHeaders = customHeaders
-        self.streamRepresentationId = representationId
-        self.streamBandwidth = bandwidth
-        self.streamPreferredAudioLanguage = preferredAudioLanguage
-        self.streamHLSAudioTracks = hlsAudioTracks
         // Without the last known counts a restored paused row draws an empty
         // bar — there is no byte total to fall back on. Refreshed on resume.
         if let completedSegments, let totalSegments, totalSegments > 0 {
@@ -746,9 +755,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
 
     /// Runs the native stream download (HLS/DASH) via StreamDownloader,
     /// mirroring progress onto this task so the UI row shows real bytes/speed.
-    private func runStreamDownload() async throws {
-        guard let streamURL, let streamType else { return }
-
+    private func runStreamDownload(_ stream: DownloadKind.Stream) async throws {
         _startTime = _startTime ?? Date()
         _streamRunStart = Date()
         isMerging = false
@@ -765,15 +772,15 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // because it checks the original path which no longer has a file there.
         let finalURL = try await StreamDownloader.shared.download(
             taskID: id,
-            manifestURL: streamURL,
-            streamType: streamType,
+            manifestURL: stream.url,
+            streamType: stream.type,
             destination: destinationURL,
             headers: headers,
             segmentConcurrency: concurrency,
-            representationId: streamRepresentationId,
-            bandwidth: streamBandwidth,
-            preferredAudioLanguage: streamPreferredAudioLanguage,
-            hlsAudioTracks: streamHLSAudioTracks
+            representationId: stream.representationId,
+            bandwidth: stream.bandwidth,
+            preferredAudioLanguage: stream.preferredAudioLanguage,
+            hlsAudioTracks: stream.hlsAudioTracks
         ) { [weak self] progress in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -815,9 +822,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
 
     /// Runs yt-dlp to completion, mirroring its progress onto this task so the
     /// row shows real bytes/speed like any other download.
-    private func runYouTubeDownload() async throws {
-        guard let ytFormatSelector, let ytPageURL else { return }
-
+    private func runYouTubeDownload(_ youTube: DownloadKind.YouTube) async throws {
         _startTime = _startTime ?? Date()
         status = .downloading
 
@@ -830,8 +835,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // anything that arrived at that path since, rather than over it.
         let written = try await YouTubeDownloader.shared.download(
             taskID: id,
-            pageURL: ytPageURL,
-            formatSelector: ytFormatSelector,
+            pageURL: youTube.pageURL,
+            formatSelector: youTube.formatSelector,
             destination: destinationURL,
             cookiesFromBrowser: cookieBrowser,
             // Seeded at creation from the resolver's reported sizes, and
@@ -1451,7 +1456,10 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // on the flag alone, so a merge that throws cannot leave a failed row
         // still claiming to merge.
         if isMerging, status == .downloading {
-            activityMessage = streamURL != nil ? "Merging audio and video…" : "Combining parts…"
+            switch kind {
+            case .stream: activityMessage = "Merging audio and video…"
+            case .direct, .youTube: activityMessage = "Combining parts…"
+            }
             return
         }
         switch status {
@@ -1917,18 +1925,15 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // markWaitingForCapacity() on a blocked resume, and is still sitting
         // at .waiting) are already _isCancelled from the original pause.
         // Cancelling an already-idle segment is harmless either way.
-        // Stops the yt-dlp child for a YouTube task. The `.part` file it leaves
-        // behind is what `--continue` resumes from, so pausing loses nothing.
-        // A no-op for every non-YouTube task.
-        if ytFormatSelector != nil {
+        switch kind {
+        case .youTube:
+            // Stops the yt-dlp child; its `.part` file lets `--continue` resume.
             await YouTubeDownloader.shared.cancel(taskID: id)
-        }
-
-        // Stops in-flight segment downloads for a native stream task.
-        // StreamDownloader tracks partial temp files per segment — on resume,
-        // completed segments are skipped and in-progress ones restart cleanly.
-        if streamURL != nil {
+        case .stream:
+            // Stops in-flight segment downloads; completed segments stay on disk.
             await StreamDownloader.shared.cancel(taskID: id)
+        case .direct:
+            break
         }
 
 
@@ -2135,16 +2140,13 @@ public final class DownloadTask: ObservableObject, Identifiable {
             DownloadManager.shared.discardPendingConflict(forResolvingTaskID: id)
         }
 
-        // Same as pause(): stop the yt-dlp child for a YouTube task. Its
-        // scratch files go with everything else in cleanupTempFiles() below.
-        if ytFormatSelector != nil {
+        switch kind {
+        case .youTube:
             await YouTubeDownloader.shared.cancel(taskID: id)
-        }
-
-        // Stop in-flight segment downloads for a native stream task.
-        // The mdl-stream-<id> temp directory is cleaned up in cleanupTempFiles().
-        if streamURL != nil {
+        case .stream:
             await StreamDownloader.shared.cancel(taskID: id)
+        case .direct:
+            break
         }
 
         // Cancel the probe if active
@@ -2224,8 +2226,12 @@ public final class DownloadTask: ObservableObject, Identifiable {
     }
 
     private func currentSegmentMap() -> SegmentMap? {
-        if streamURL != nil { return .pieces(_streamPieces) }
-        return .lanes(_segments.map { ($0.startByte...$0.endByte, $0.bytesOnDisk) }, totalBytes: totalBytes)
+        switch kind {
+        case .stream:
+            return .pieces(_streamPieces)
+        case .direct, .youTube:
+            return .lanes(_segments.map { ($0.startByte...$0.endByte, $0.bytesOnDisk) }, totalBytes: totalBytes)
+        }
     }
     
     private func startSpeedTimer() {

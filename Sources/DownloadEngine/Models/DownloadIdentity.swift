@@ -85,11 +85,15 @@ extension DownloadTask {
     /// than the current destination's name on purpose: a task already renamed
     /// to "video (1).mp4" must still be recognised as the download it is.
     var identity: DownloadIdentity {
-        DownloadIdentity(
-            url: url, name: originalName, youTubeFormatSelector: ytFormatSelector,
-            // Stream and yt-dlp totals are estimates; only direct downloads
-            // have an exact size to compare.
-            size: (streamURL == nil && ytFormatSelector == nil) ? totalBytes : nil
-        )
+        switch kind {
+        case .direct:
+            return DownloadIdentity(url: url, name: originalName, size: totalBytes)
+        case .youTube(let youTube):
+            // yt-dlp totals are estimates; only direct downloads compare size.
+            return DownloadIdentity(url: url, name: originalName, youTubeFormatSelector: youTube.formatSelector)
+        case .stream:
+            // Stream totals are estimates; only direct downloads compare size.
+            return DownloadIdentity(url: url, name: originalName)
+        }
     }
 }
