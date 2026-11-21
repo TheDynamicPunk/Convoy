@@ -1,6 +1,6 @@
 import Foundation
 
-enum MagnetURIError: Error, Equatable {
+public enum MagnetURIError: Error, Equatable, Sendable {
     /// Not text that starts with `magnet:`.
     case notAMagnetLink
     /// A magnet link, but it names no torrent we can identify.
@@ -14,17 +14,17 @@ enum MagnetURIError: Error, Equatable {
 
 /// What a magnet link says: which torrent, what to call it, where to ask for
 /// peers. Reading it fetches nothing.
-struct MagnetURI: Equatable, Sendable {
+public struct MagnetURI: Equatable, Sendable {
     /// The v1 info hash, the identity used for duplicate detection.
-    let infoHash: TorrentInfoHash
+    public let infoHash: TorrentInfoHash
     /// The SHA-256 digest from a `urn:btmh:` hash, when the link carries one
     /// (a hybrid torrent). Kept so a later version need not parse again.
-    let infoHashV2: String?
+    public let infoHashV2: String?
     /// `dn`, not yet made safe to use as a file name.
-    let displayName: String?
-    let trackers: [String]
+    public let displayName: String?
+    public let trackers: [String]
 
-    init(_ text: String) throws {
+    public init(_ text: String) throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.lowercased().hasPrefix("magnet:") else { throw MagnetURIError.notAMagnetLink }
 

@@ -1,32 +1,47 @@
 import Foundation
 
 /// Where a torrent being added comes from.
-enum TorrentSource: Equatable, Sendable {
+public enum TorrentSource: Equatable, Sendable {
     /// A magnet link, exactly as it was given. Its trackers travel with it.
     case magnet(String)
     case torrentFile(Data)
 }
 
 /// What the engine knows about a torrent it has been given.
-struct TorrentDetails: Equatable, Sendable {
-    struct File: Equatable, Sendable {
+public struct TorrentDetails: Equatable, Sendable {
+    public struct File: Equatable, Sendable {
         /// Path components below the torrent's folder.
-        let path: [String]
-        let length: Int64
+        public let path: [String]
+        public let length: Int64
         /// Whether it is among the files being downloaded.
-        let isIncluded: Bool
+        public let isIncluded: Bool
+
+        public init(path: [String], length: Int64, isIncluded: Bool) {
+            self.path = path
+            self.length = length
+            self.isIncluded = isIncluded
+        }
+
+        public var displayPath: String { path.joined(separator: "/") }
     }
 
-    let infoHash: TorrentInfoHash
-    let name: String
+    public let infoHash: TorrentInfoHash
+    public let name: String
     /// The folder the engine writes this torrent's files into.
-    let outputFolder: URL
-    let files: [File]
+    public let outputFolder: URL
+    public let files: [File]
+
+    public init(infoHash: TorrentInfoHash, name: String, outputFolder: URL, files: [File]) {
+        self.infoHash = infoHash
+        self.name = name
+        self.outputFolder = outputFolder
+        self.files = files
+    }
 }
 
 /// How a torrent is doing right now.
-struct TorrentSnapshot: Equatable, Sendable {
-    enum State: Equatable, Sendable {
+public struct TorrentSnapshot: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         /// Starting up, or checking data that is already on disk.
         case initializing
         /// Transferring, or waiting for peers.
@@ -38,24 +53,48 @@ struct TorrentSnapshot: Equatable, Sendable {
         case error(String)
     }
 
-    var state: State
+    public var state: State
     /// Bytes of the wanted pieces that are here and checked.
-    var downloadedBytes: Int64
+    public var downloadedBytes: Int64
     /// Bytes of the pieces that cover the wanted files. A piece can straddle
     /// a skipped file, so this can exceed the files' own total.
-    var totalBytes: Int64
-    var uploadedBytes: Int64
-    var downloadBytesPerSecond: Double
-    var uploadBytesPerSecond: Double
-    var connectedPeers: Int
-    var connectedSeeds: Int
+    public var totalBytes: Int64
+    public var uploadedBytes: Int64
+    public var downloadBytesPerSecond: Double
+    public var uploadBytesPerSecond: Double
+    public var connectedPeers: Int
+    public var connectedSeeds: Int
     /// Peers heard of, connected or not.
-    var seenPeers: Int
+    public var seenPeers: Int
     /// Bytes downloaded of each file, in the torrent's file order.
-    var fileProgress: [Int64]
+    public var fileProgress: [Int64]
+
+    public init(
+        state: State,
+        downloadedBytes: Int64,
+        totalBytes: Int64,
+        uploadedBytes: Int64,
+        downloadBytesPerSecond: Double,
+        uploadBytesPerSecond: Double,
+        connectedPeers: Int,
+        connectedSeeds: Int,
+        seenPeers: Int,
+        fileProgress: [Int64]
+    ) {
+        self.state = state
+        self.downloadedBytes = downloadedBytes
+        self.totalBytes = totalBytes
+        self.uploadedBytes = uploadedBytes
+        self.downloadBytesPerSecond = downloadBytesPerSecond
+        self.uploadBytesPerSecond = uploadBytesPerSecond
+        self.connectedPeers = connectedPeers
+        self.connectedSeeds = connectedSeeds
+        self.seenPeers = seenPeers
+        self.fileProgress = fileProgress
+    }
 }
 
-enum TorrentEngineError: Error, Equatable {
+public enum TorrentEngineError: Error, Equatable {
     /// The engine's executable is not installed at this path.
     case helperMissing(path: String)
     /// It started and then did not come up; carries what it printed.
@@ -74,7 +113,7 @@ enum TorrentEngineError: Error, Equatable {
 }
 
 extension TorrentEngineError: LocalizedError {
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .helperMissing: return "The torrent engine is not installed."
         case .helperFailedToStart(let detail):

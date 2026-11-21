@@ -33,6 +33,8 @@ public struct DeletionPlan {
         /// bytes are resumable, so discarding them costs more than "failed"
         /// implies.
         public let isFailed: Bool
+        /// True when this item is a completed torrent still uploading to peers.
+        public let isSeeding: Bool
         /// Display name of the folder the finished file sits in, so the copy
         /// can name where it's being left behind. Nil for unfinished tasks.
         public let folderName: String?
@@ -54,6 +56,7 @@ public struct DeletionPlan {
                 filename: task.filename,
                 impact: impact,
                 isFailed: isFailed,
+                isSeeding: task.isSeeding,
                 folderName: folderName
             )
         }
@@ -65,13 +68,33 @@ public struct DeletionPlan {
                 ? .discardsProgress(bytes: task.downloadedBytes)
                 : .nothingToLose
         }
-        // Reading the size doubles as the existence check — a file that's
-        // been moved or deleted since it finished has nothing to offer.
-        guard let values = try? task.destinationURL.resourceValues(forKeys: [.fileSizeKey]),
-              let size = values.fileSize else {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey]
+        guard let values = try? task.destinationURL.resourceValues(forKeys: keys) else {
+            return .finishedFileMissing
+        }
+        if values.isDirectory == true {
+            let bytes = directorySize(at: task.destinationURL)
+            return .finishedFile(bytes: bytes > 0 ? bytes : task.totalBytes)
+        }
+        guard let size = values.fileSize else {
             return .finishedFileMissing
         }
         return .finishedFile(bytes: Int64(size))
+    }
+
+    private static func directorySize(at url: URL) -> Int64 {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey]
+        guard let walker = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: Array(keys)
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let child as URL in walker {
+            guard let values = try? child.resourceValues(forKeys: keys),
+                  values.isDirectory != true,
+                  let size = values.fileSize else { continue }
+            total += Int64(size)
+        }
+        return total
     }
 
     // MARK: - Aggregates
@@ -82,6 +105,11 @@ public struct DeletionPlan {
     /// different (and much more specific) in that case.
     public var single: Item? { items.count == 1 ? items.first : nil }
 
+    /// True when at least one item is currently seeding.
+    public var hasSeedingItems: Bool {
+        items.contains(where: \.isSeeding)
+    }
+
     /// True when every item costs nothing to delete — no bytes on disk to
     /// discard, and no finished file to decide the fate of. When this holds,
     /// the confirmation sheet has nothing to say beyond "deleted", so the
@@ -90,7 +118,7 @@ public struct DeletionPlan {
     public var isTriviallyDeletable: Bool {
         items.allSatisfy { item in
             switch item.impact {
-            case .nothingToLose, .finishedFileMissing: return true
+            case .nothingToLose, .finishedFileMissing: return !item.isSeeding
             case .finishedFile, .discardsProgress: return false
             }
         }

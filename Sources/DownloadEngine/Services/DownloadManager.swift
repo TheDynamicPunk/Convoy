@@ -26,7 +26,7 @@ public final class DownloadManager: ObservableObject {
     /// subscription in init() below for how newly-available capacity
     /// actually gets *used* once the limit rises, since nothing else would
     /// notice on its own until some unrelated download happens to finish.
-    private var maxConcurrent: Int { settings.maxConcurrentDownloads }
+    private var maxConcurrent: Int { maxConcurrentOverride ?? settings.maxConcurrentDownloads }
     /// Public read-only mirror of the above, for UI that needs to explain
     /// *why* a task is queued (see DownloadRowView's .waiting state)
     /// without reaching into AppSettings directly and duplicating
@@ -35,6 +35,14 @@ public final class DownloadManager: ObservableObject {
     private var activeTasks: Set<UUID> = []
     private var statusObservers: [UUID: AnyCancellable] = [:]
     private var settingsObserver: AnyCancellable?
+
+    private let torrentEngine: any TorrentEngine
+    private let persistenceURL: URL
+    private let torrentsDirectory: URL
+    private let maxConcurrentOverride: Int?
+    private let torrentAvailableSpaceProvider: ((URL) -> Int64?)?
+    private let torrentPollInterval: Duration
+    private let torrentSeedingPolicyProvider: (@MainActor () -> SeedingPolicy)?
     
     /// The conflict currently shown in the sheet. Nil when no conflict is
     /// pending. Managed exclusively by enqueueConflict / resolveConflict.
@@ -67,7 +75,7 @@ public final class DownloadManager: ObservableObject {
     /// resolveLateIdentity.
     private var conflictWaiters: [UUID: CheckedContinuation<ConflictResolution, Never>] = [:]
 
-    private let listLock = DownloadListLock(beside: DownloadManager.persistenceURL)
+    private let listLock: DownloadListLock
     /// Set when the list on disk couldn't be read and couldn't be moved aside
     /// either — the one case where saving would destroy it.
     private var listIsUnreadable = false
@@ -75,10 +83,45 @@ public final class DownloadManager: ObservableObject {
     /// reads or writes it.
     public var ownsDownloadList: Bool { !listLock.isHeldElsewhere }
 
-    private init() {
+    private convenience init() {
+        self.init(
+            torrentEngine: RqbitEngine(),
+            persistenceURL: Self.defaultPersistenceURL,
+            torrentsDirectory: HelperLocations.torrentsDirectory,
+            maxConcurrentOverride: nil,
+            torrentAvailableSpaceProvider: nil,
+            torrentPollInterval: .seconds(1),
+            torrentSeedingPolicyProvider: nil,
+            measureTempStorageOnLaunch: true
+        )
+    }
+
+    /// Testable initializer allowing isolated persistence, torrent storage,
+    /// concurrency limit, and a fake `TorrentEngine`.
+    internal init(
+        torrentEngine: any TorrentEngine,
+        persistenceURL: URL,
+        torrentsDirectory: URL,
+        maxConcurrentOverride: Int? = nil,
+        torrentAvailableSpaceProvider: ((URL) -> Int64?)? = nil,
+        torrentPollInterval: Duration = .milliseconds(20),
+        torrentSeedingPolicyProvider: (@MainActor () -> SeedingPolicy)? = nil,
+        measureTempStorageOnLaunch: Bool = false
+    ) {
+        self.torrentEngine = torrentEngine
+        self.persistenceURL = persistenceURL
+        self.torrentsDirectory = torrentsDirectory
+        self.maxConcurrentOverride = maxConcurrentOverride
+        self.torrentAvailableSpaceProvider = torrentAvailableSpaceProvider
+        self.torrentPollInterval = torrentPollInterval
+        self.torrentSeedingPolicyProvider = torrentSeedingPolicyProvider
+        self.listLock = DownloadListLock(beside: persistenceURL)
+
         if ownsDownloadList {
             loadPersistedTasks()
-            Task { await measureTemporaryStorageAtLaunch() }
+            if measureTempStorageOnLaunch {
+                Task { await measureTemporaryStorageAtLaunch() }
+            }
         } else {
             logger.notice("another process owns the download list; not loading it")
         }
@@ -429,6 +472,175 @@ public final class DownloadManager: ObservableObject {
         return task
     }
 
+    /// Resolves a magnet link's metadata via the torrent engine (used by the
+    /// capture dialog to display the file list before starting).
+    public func probeMagnet(_ magnet: String) async throws -> TorrentFile {
+        try await torrentEngine.probe(magnet: magnet)
+    }
+
+    /// Adds a BitTorrent download from a magnet link or `.torrent` file.
+    ///
+    /// Torrents are not routed by download categories in v1 (plan 3.9) and
+    /// never enter `.urlExpired`. Duplicate detection matches solely by v1
+    /// info hash (see `DownloadIdentity`).
+    @discardableResult
+    public func addTorrentDownload(_ request: TorrentAddRequest) async throws -> DownloadTask {
+        let infoHash: TorrentInfoHash
+        let infoHashV2: String?
+        let magnetURI: String?
+        let resolvedMetadata: TorrentFile?
+        let fallbackDisplayName: String?
+
+        switch request.source {
+        case .torrentFile(let data):
+            let parsed = try request.metadata ?? TorrentFile(data)
+            infoHash = parsed.infoHash
+            infoHashV2 = nil
+            magnetURI = nil
+            resolvedMetadata = parsed
+            fallbackDisplayName = parsed.name
+        case .magnet(let rawMagnet):
+            let parsedMagnet = try MagnetURI(rawMagnet)
+            infoHash = parsedMagnet.infoHash
+            infoHashV2 = parsedMagnet.infoHashV2
+            magnetURI = rawMagnet
+            if let meta = request.metadata, meta.infoHash == parsedMagnet.infoHash {
+                resolvedMetadata = meta
+                fallbackDisplayName = meta.name
+            } else {
+                resolvedMetadata = nil
+                fallbackDisplayName = parsedMagnet.displayName
+            }
+        }
+
+        let nameAndSource: (name: String, source: FilenameSource) = {
+            if let custom = request.customName, let safe = FilenameResolver.sanitize(custom) {
+                return (safe, .userProvided)
+            }
+            if let meta = resolvedMetadata, let safe = FilenameResolver.sanitize(meta.name) {
+                return (safe, .torrentName)
+            }
+            if let display = fallbackDisplayName, let safe = FilenameResolver.sanitize(display) {
+                return (safe, .originalURL)
+            }
+            return ("Torrent \(infoHash.hex.prefix(8))", .fallback)
+        }()
+
+        let parentFolder = request.destinationFolder
+            ?? URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
+        let candidateFolder = parentFolder.appendingPathComponent(nameAndSource.name, isDirectory: true)
+        let originalName = nameAndSource.name
+        let startsAutomatically = request.startAutomatically ?? settings.autoStartDownloads
+        let taskURL = (magnetURI.flatMap { URL(string: $0) })
+            ?? URL(string: "magnet:?xt=urn:btih:\(infoHash.hex)")!
+
+        if !request.skipConflictCheck,
+           let existing = existingTask(
+               matchingURL: taskURL,
+               originalName: originalName,
+               torrentInfoHash: infoHash
+           ) {
+            let altName = deduplicatedDestination(for: existing.destinationURL, isDirectory: true).lastPathComponent
+            enqueueConflict(DuplicateDownloadConflict(
+                incomingURL: taskURL,
+                incomingHeaders: [:],
+                incomingReferrer: nil,
+                incomingDestination: candidateFolder,
+                incomingFilenameSource: nameAndSource.source,
+                existingTask: existing,
+                suggestedAlternativeName: altName,
+                resolvingTaskID: nil,
+                incomingTorrentInfo: request,
+                incomingFolderIsExplicit: request.folderIsExplicit,
+                incomingStartsAutomatically: request.startAutomatically
+            ))
+            throw DownloadConflictError()
+        }
+
+        let dest = deduplicatedDestination(for: candidateFolder, isDirectory: true)
+        let initialTotalBytes: Int64 = {
+            guard let meta = resolvedMetadata else { return 0 }
+            if let selected = request.selectedFiles {
+                return meta.files.enumerated()
+                    .filter { selected.contains($0.offset) && !$0.element.isPadding }
+                    .reduce(0) { $0 + $1.element.length }
+            }
+            return meta.totalSize
+        }()
+
+        let task = DownloadTask(
+            url: taskURL,
+            destinationURL: dest,
+            originalName: originalName,
+            segmentCount: 1,
+            initialStatus: startsAutomatically ? .waiting : .paused,
+            totalBytes: initialTotalBytes,
+            filenameSource: nameAndSource.source,
+            folderIsExplicit: request.folderIsExplicit
+        )
+
+        var storedPath: String?
+        if let meta = resolvedMetadata {
+            storedPath = try? TorrentStorage.saveTorrentData(meta.source, for: task.id, base: torrentsDirectory).path
+        }
+
+        let initialFiles: [TorrentDetails.File] = resolvedMetadata?.files.enumerated().map { index, entry in
+            TorrentDetails.File(
+                path: entry.path,
+                length: entry.length,
+                isIncluded: request.selectedFiles?.contains(index) ?? true
+            )
+        } ?? []
+
+        let torrentKind = DownloadKind.Torrent(
+            infoHash: infoHash,
+            infoHashV2: infoHashV2,
+            magnetURI: magnetURI,
+            storedTorrentPath: storedPath,
+            selectedFiles: request.selectedFiles,
+            wholeTorrentSize: resolvedMetadata?.totalSize,
+            hasClaimedFolder: false
+        )
+        configureTorrentTask(task, torrent: torrentKind, initialFiles: initialFiles)
+        task.markDestinationMissingIfNeeded()
+
+        observeStatus(of: task)
+        tasks.append(task)
+        savePersistedTasks()
+
+        if startsAutomatically, task.status == .waiting {
+            Task { try? await startDownload(task) }
+        }
+        return task
+    }
+
+    private func configureTorrentTask(
+        _ task: DownloadTask,
+        torrent: DownloadKind.Torrent,
+        initialFiles: [TorrentDetails.File] = []
+    ) {
+        task.configureTorrentDownload(
+            torrent,
+            engine: torrentEngine,
+            torrentsDirectory: torrentsDirectory,
+            pollInterval: torrentPollInterval,
+            seedingPolicyProvider: torrentSeedingPolicyProvider,
+            availableSpaceProvider: torrentAvailableSpaceProvider,
+            onMetadataResolved: { [weak self] resolvingTask, safeName in
+                guard let self else {
+                    return resolvingTask.destinationURL
+                        .deletingLastPathComponent()
+                        .appendingPathComponent(safeName, isDirectory: true)
+                }
+                let candidate = resolvingTask.destinationURL
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(safeName, isDirectory: true)
+                return self.deduplicatedDestination(for: candidate, isDirectory: true, excluding: resolvingTask.id)
+            },
+            initialFiles: initialFiles
+        )
+    }
+
     public func startDownload(_ task: DownloadTask) async throws {
         // Do this before considering capacity. A missing folder is a blocked
         // state, not a queued download, even when every slot is in use.
@@ -533,6 +745,9 @@ public final class DownloadManager: ObservableObject {
         var trashFailures = 0
 
         for task in targets {
+            if task.isSeeding {
+                await task.stopSeeding()
+            }
             if task.status != .completed {
                 await task.cancel()
                 releaseActiveSlot(for: task)
@@ -865,9 +1080,9 @@ public final class DownloadManager: ObservableObject {
     ///   YouTube requests are the same download only when they would produce
     ///   the same bytes, which is page URL *and* selector. `nil == nil` for
     ///   every other kind of download, so nothing else changes behaviour.
-    private func existingTask(matchingURL url: URL, originalName: String, youTubeFormatSelector: String? = nil, size: Int64? = nil, excluding excludedTaskID: UUID? = nil) -> DownloadTask? {
+    private func existingTask(matchingURL url: URL, originalName: String, youTubeFormatSelector: String? = nil, size: Int64? = nil, torrentInfoHash: TorrentInfoHash? = nil, excluding excludedTaskID: UUID? = nil) -> DownloadTask? {
         let incoming = DownloadIdentity(
-            url: url, name: originalName, youTubeFormatSelector: youTubeFormatSelector, size: size
+            url: url, name: originalName, youTubeFormatSelector: youTubeFormatSelector, size: size, torrentInfoHash: torrentInfoHash
         )
         return (tasks + completedTasks).first { task in
             guard task.id != excludedTaskID else { return false }
@@ -1001,6 +1216,19 @@ public final class DownloadManager: ObservableObject {
     @discardableResult
     private func recreateIncoming(_ conflict: DuplicateDownloadConflict, destination: URL? = nil) async throws -> DownloadTask {
         let dest = destination ?? conflict.incomingDestination
+        if let torrentRequest = conflict.incomingTorrentInfo {
+            let updated = TorrentAddRequest(
+                source: torrentRequest.source,
+                metadata: torrentRequest.metadata,
+                destinationFolder: dest.deletingLastPathComponent(),
+                customName: dest.lastPathComponent,
+                selectedFiles: torrentRequest.selectedFiles,
+                folderIsExplicit: conflict.incomingFolderIsExplicit,
+                startAutomatically: conflict.incomingStartsAutomatically,
+                skipConflictCheck: true
+            )
+            return try await addTorrentDownload(updated)
+        }
         if let info = conflict.incomingYouTubeInfo {
             return try await addYouTubeDownload(
                 pageURL: conflict.incomingURL,
@@ -1155,13 +1383,13 @@ public final class DownloadManager: ObservableObject {
     /// itself, and gets bumped to "file (1).ext" for no real reason. Callers
     /// proposing a name for a genuinely different, not-yet-created task (e.g.
     /// resolveConflict's .addSeparate) should leave this nil.
-    internal func deduplicatedDestination(for url: URL, excluding excludedTaskID: UUID? = nil) -> URL {
+    internal func deduplicatedDestination(for url: URL, isDirectory: Bool = false, excluding excludedTaskID: UUID? = nil) -> URL {
         let allTasks = (tasks + completedTasks).filter { $0.id != excludedTaskID }
         var counter  = 0
         while true {
             // Shared with the claim made at the moment of writing, so the name
             // the duplicate sheet promises is the name that lands on disk.
-            let candidate = DownloadDestination.candidate(for: url, suffix: counter)
+            let candidate = DownloadDestination.candidate(for: url, suffix: counter, isDirectory: isDirectory)
             // Standardized once, not inside the predicate. `/a/b/../c/x.zip`
             // and `/a/c/x.zip` name the same file but are different strings,
             // so the comparison has to be against tidied paths — and tidying
@@ -1201,7 +1429,7 @@ public final class DownloadManager: ObservableObject {
     }
     
     private func loadPersistedTasks() {
-        guard let data = try? Data(contentsOf: Self.persistenceURL) else { return }
+        guard let data = try? Data(contentsOf: persistenceURL) else { return }
 
         let snapshots: [PersistedDownloadTask]
         do {
@@ -1259,6 +1487,8 @@ public final class DownloadManager: ObservableObject {
                         completedSegments: snap.streamCompletedSegments,
                         totalSegments: snap.streamTotalSegments
                     )
+                case .torrent(let torrent):
+                    configureTorrentTask(task, torrent: torrent)
                 case .direct:
                     break
                 }
@@ -1279,6 +1509,9 @@ public final class DownloadManager: ObservableObject {
                     categoryID: snap.categoryID,
                     createdAt: snap.createdAt ?? Date()
                 )
+                if case .torrent(let torrent) = snap.downloadKind {
+                    configureTorrentTask(task, torrent: torrent)
+                }
                 completedTasks.append(task)
             case .urlExpired:
                 let task = DownloadTask(
@@ -1350,7 +1583,7 @@ public final class DownloadManager: ObservableObject {
     /// the empty one this session would otherwise save over it.
     private func keepUnreadableList(_ error: Error) {
         do {
-            let kept = try UnreadableDownloadList.setAside(Self.persistenceURL)
+            let kept = try UnreadableDownloadList.setAside(persistenceURL)
             logger.error("could not read the download list (\(error, privacy: .private)); kept it as \(kept.lastPathComponent, privacy: .public)")
         } catch {
             listIsUnreadable = true
@@ -1378,13 +1611,17 @@ public final class DownloadManager: ObservableObject {
             }
             let youTube: DownloadKind.YouTube?
             let stream: DownloadKind.Stream?
+            let torrent: PersistedDownloadTask.PersistedTorrent?
             switch task.kind {
             case .direct:
-                youTube = nil; stream = nil
+                youTube = nil; stream = nil; torrent = nil
             case .youTube(let yt):
-                youTube = yt; stream = nil
+                youTube = yt; stream = nil; torrent = nil
             case .stream(let s):
-                youTube = nil; stream = s
+                youTube = nil; stream = s; torrent = nil
+            case .torrent(let t):
+                youTube = nil; stream = nil
+                torrent = PersistedDownloadTask.PersistedTorrent(from: t, wasSeeding: task.isSeeding)
             }
             return PersistedDownloadTask(
                 id: task.id, url: task.url, destinationPath: task.destinationURL.path,
@@ -1407,11 +1644,18 @@ public final class DownloadManager: ObservableObject {
                 streamTotalSegments: task.segmentProgress?.total,
                 filenameSource: task.filenameSource,
                 streamRequestHeaders: stream == nil
-                    ? nil : persistableStreamHeaders(task.customHeaders)
+                    ? nil : persistableStreamHeaders(task.customHeaders),
+                torrent: torrent
             )
         }
-        let completed = completedTasks.map { task in
-            PersistedDownloadTask(
+        let completed = completedTasks.map { task -> PersistedDownloadTask in
+            let torrent: PersistedDownloadTask.PersistedTorrent?
+            if case .torrent(let t) = task.kind {
+                torrent = PersistedDownloadTask.PersistedTorrent(from: t, wasSeeding: task.isSeeding)
+            } else {
+                torrent = nil
+            }
+            return PersistedDownloadTask(
                 id: task.id, url: task.url, destinationPath: task.destinationURL.path,
                 originalName: task.originalName, createdAt: task.createdAt,
                 priorityRaw: task.priority.rawValue, segmentCount: task.segmentCount,
@@ -1429,12 +1673,13 @@ public final class DownloadManager: ObservableObject {
                 streamHLSAudioTracks: nil,
                 streamCompletedSegments: nil, streamTotalSegments: nil,
                 filenameSource: task.filenameSource,
-                streamRequestHeaders: nil
+                streamRequestHeaders: nil,
+                torrent: torrent
             )
         }
         
         guard let data = try? JSONEncoder().encode(active + completed) else { return }
-        try? data.write(to: Self.persistenceURL, options: Data.WritingOptions.atomic)
+        try? data.write(to: persistenceURL, options: Data.WritingOptions.atomic)
     }
 
     
@@ -1444,7 +1689,7 @@ public final class DownloadManager: ObservableObject {
         savePersistedTasks()
     }
     
-    private static let persistenceURL: URL = {
+    private static let defaultPersistenceURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("Convoy", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1526,11 +1771,47 @@ struct PersistedDownloadTask: Codable {
     /// (which is also every snapshot written while these lived in the
     /// Keychain instead).
     let streamRequestHeaders: [String: String]?
+    /// BitTorrent task payload, nil for every non-torrent download and for
+    /// snapshots written before torrent support existed.
+    var torrent: PersistedTorrent? = nil
+
+    struct PersistedTorrent: Codable, Equatable {
+        let infoHashHex: String
+        let infoHashV2: String?
+        let magnetURI: String?
+        let storedTorrentPath: String?
+        let selectedFiles: [Int]?
+        let wholeTorrentSize: Int64?
+        let hasClaimedFolder: Bool
+        let wasSeeding: Bool?
+
+        init(from torrent: DownloadKind.Torrent, wasSeeding: Bool) {
+            self.infoHashHex = torrent.infoHash.hex
+            self.infoHashV2 = torrent.infoHashV2
+            self.magnetURI = torrent.magnetURI
+            self.storedTorrentPath = torrent.storedTorrentPath
+            self.selectedFiles = torrent.selectedFiles.map { $0.sorted() }
+            self.wholeTorrentSize = torrent.wholeTorrentSize
+            self.hasClaimedFolder = torrent.hasClaimedFolder
+            self.wasSeeding = wasSeeding ? true : nil
+        }
+    }
 
     /// Decodes the persisted flat optional clusters into an explicit
     /// `DownloadKind` while keeping the on-disk `downloads.json` format
     /// unchanged for older snapshots.
     var downloadKind: DownloadKind {
+        if let torrent, let infoHash = TorrentInfoHash(hex: torrent.infoHashHex) {
+            return .torrent(.init(
+                infoHash: infoHash,
+                infoHashV2: torrent.infoHashV2,
+                magnetURI: torrent.magnetURI,
+                storedTorrentPath: torrent.storedTorrentPath,
+                selectedFiles: torrent.selectedFiles.map(Set.init),
+                wholeTorrentSize: torrent.wholeTorrentSize,
+                hasClaimedFolder: torrent.hasClaimedFolder
+            ))
+        }
         if let selector = ytFormatSelector, let page = ytPageURL {
             return .youTube(.init(formatSelector: selector, pageURL: page))
         }
@@ -1634,6 +1915,8 @@ public struct DuplicateDownloadConflict: Identifiable {
     /// request rebuilt as a plain byte-range download would fetch the watch
     /// page's HTML instead of the video.
     public let incomingYouTubeInfo: YouTubeInfo?
+    /// Non-nil when the incoming request is a BitTorrent download.
+    public let incomingTorrentInfo: TorrentAddRequest?
     /// Whether the incoming request's folder was one a person picked. Carried
     /// through so "Save as separate" and "Restart" recreate the download with
     /// the same standing; without it a folder the person chose would quietly
@@ -1656,6 +1939,7 @@ public struct DuplicateDownloadConflict: Identifiable {
         resolvingTaskID: UUID?,
         incomingStreamInfo: StreamInfo? = nil,
         incomingYouTubeInfo: YouTubeInfo? = nil,
+        incomingTorrentInfo: TorrentAddRequest? = nil,
         incomingFolderIsExplicit: Bool = false,
         incomingStartsAutomatically: Bool? = nil
     ) {
@@ -1669,6 +1953,7 @@ public struct DuplicateDownloadConflict: Identifiable {
         self.resolvingTaskID = resolvingTaskID
         self.incomingStreamInfo = incomingStreamInfo
         self.incomingYouTubeInfo = incomingYouTubeInfo
+        self.incomingTorrentInfo = incomingTorrentInfo
         self.incomingFolderIsExplicit = incomingFolderIsExplicit
         self.incomingStartsAutomatically = incomingStartsAutomatically
     }

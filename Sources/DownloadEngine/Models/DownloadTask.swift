@@ -30,6 +30,10 @@ public enum DownloadError: LocalizedError {
     /// every yt-dlp-based tool identically as of this writing, not
     /// something specific to this app or fixable by retrying further.
     case youtubeQualityCurrentlyBlocked
+    /// Disk ran out of space while a torrent was downloading (ENOSPC).
+    case torrentDiskFull
+    /// A torrent-engine failure reported in a snapshot.
+    case torrentEngineError(String)
     
     public var errorDescription: String? {
         switch self {
@@ -47,6 +51,10 @@ public enum DownloadError: LocalizedError {
             // The why is in the doc comment on the case. A download row shows
             // this in two lines, so it says only what the person can act on.
             return "YouTube is refusing this quality right now. It affects every download tool, not just Convoy — try a different quality."
+        case .torrentDiskFull:
+            return "Not enough disk space to continue this download. Free up space and resume."
+        case .torrentEngineError(let message):
+            return message
         }
     }
 }
@@ -120,11 +128,38 @@ public final class DownloadTask: ObservableObject, Identifiable {
     /// Which engine drives this task and its engine-specific configuration.
     public private(set) var kind: DownloadKind = .direct
 
+    // MARK: - Torrent live state
+
+    /// True while a completed torrent is still uploading to peers.
+    /// Seeding is a flag alongside `.completed`, not a separate status.
+    @Published public private(set) var isSeeding: Bool = false
+    @Published public private(set) var uploadSpeed: Int64 = 0
+    @Published public private(set) var uploadedBytes: Int64 = 0
+    @Published public private(set) var connectedPeers: Int = 0
+    @Published public private(set) var connectedSeeds: Int = 0
+    @Published public private(set) var torrentFiles: [TorrentDetails.File] = []
+    @Published public private(set) var torrentFileProgress: [Int64] = []
+
+    public var isTorrent: Bool {
+        if case .torrent = kind { return true }
+        return false
+    }
+
+    public var torrentInfoHash: TorrentInfoHash? {
+        if case .torrent(let torrent) = kind { return torrent.infoHash }
+        return nil
+    }
+
+    public var seedRatio: Double {
+        guard totalBytes > 0 else { return 0 }
+        return Double(uploadedBytes) / Double(totalBytes)
+    }
+
     /// True when the finished size cannot be known until the download ends.
     public var hasUnknownTotalSize: Bool {
         switch kind {
         case .stream: return true
-        case .direct, .youTube: return false
+        case .direct, .youTube, .torrent: return false
         }
     }
 
@@ -269,6 +304,21 @@ public final class DownloadTask: ObservableObject, Identifiable {
 
     /// Stops a join in flight on pause()/cancel(). Nil when no join runs.
     private var _mergeCancellation: MergeCancellation?
+
+    // Torrent engine wiring (configured via `configureTorrentDownload`).
+    private var _torrentEngine: (any TorrentEngine)?
+    private var _torrentsDirectory: URL = HelperLocations.torrentsDirectory
+    private var _torrentPollInterval: Duration = .seconds(1)
+    private var _torrentSeedingPolicyProvider: @MainActor () -> SeedingPolicy = { AppSettings.shared.seedingPolicy }
+    private var _torrentAvailableSpaceProvider: ((URL) -> Int64?)?
+    private var _onTorrentMetadataResolved: (@MainActor (DownloadTask, String) -> URL)?
+    private var _torrentActiveTask: Task<Void, Error>?
+    private var _torrentSeedingTask: Task<Void, Never>?
+    private var _torrentActivityNote: String? {
+        didSet { updateActivityMessage() }
+    }
+    private var _smoothedDownSpeed: Double = 0
+    private var _smoothedUpSpeed: Double = 0
 
     /// HTTP validators from the initial response — used to detect if the
     /// remote file changed between pause and resume, and sent as `If-Range`
@@ -438,6 +488,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
         case .stream(let stream):
             // Native HLS/DASH stream download — segment-aware, no yt-dlp.
             await runExternalEngine { try await runStreamDownload(stream) }
+            return
+        case .torrent(let torrent):
+            await runExternalEngine { try await runTorrentDownload(torrent) }
             return
         case .direct:
             break
@@ -879,6 +932,320 @@ public final class DownloadTask: ObservableObject, Identifiable {
         status = .completed
         _endTime = Date()
         stopSpeedTimer()
+    }
+
+    // MARK: - Torrent download
+
+    /// Links this task to the BitTorrent engine. Called at creation by
+    /// `DownloadManager.addTorrentDownload`, and on relaunch when restoring.
+    func configureTorrentDownload(
+        _ torrent: DownloadKind.Torrent,
+        engine: any TorrentEngine,
+        torrentsDirectory: URL = HelperLocations.torrentsDirectory,
+        pollInterval: Duration = .seconds(1),
+        seedingPolicyProvider: (@MainActor () -> SeedingPolicy)? = nil,
+        availableSpaceProvider: ((URL) -> Int64?)? = nil,
+        onMetadataResolved: (@MainActor (DownloadTask, String) -> URL)? = nil,
+        initialFiles: [TorrentDetails.File] = []
+    ) {
+        self.kind = .torrent(torrent)
+        self._torrentEngine = engine
+        self._torrentsDirectory = torrentsDirectory
+        self._torrentPollInterval = pollInterval
+        if let seedingPolicyProvider {
+            self._torrentSeedingPolicyProvider = seedingPolicyProvider
+        }
+        self._torrentAvailableSpaceProvider = availableSpaceProvider
+        self._onTorrentMetadataResolved = onMetadataResolved
+        if !initialFiles.isEmpty {
+            self.torrentFiles = initialFiles
+        }
+    }
+
+    /// Stops seeding a completed torrent and removes it from the engine
+    /// while keeping all downloaded files on disk.
+    public func stopSeeding() async {
+        _torrentSeedingTask?.cancel()
+        _torrentSeedingTask = nil
+        if case .torrent(let torrent) = kind, let engine = _torrentEngine {
+            try? await engine.remove(torrent.infoHash, deleteData: false)
+        }
+        isSeeding = false
+        uploadSpeed = 0
+        connectedPeers = 0
+        connectedSeeds = 0
+    }
+
+    /// Updates which files of this torrent are downloaded, both before start
+    /// and at runtime while active.
+    public func setSelectedTorrentFiles(_ files: Set<Int>) async throws {
+        guard case .torrent(var torrent) = kind else { return }
+        if let engine = _torrentEngine {
+            do {
+                try await engine.setSelectedFiles(files, of: torrent.infoHash)
+                if let details = try? await engine.details(of: torrent.infoHash) {
+                    torrentFiles = details.files
+                }
+            } catch TorrentEngineError.notFound {
+                // Not added to the engine yet; selection is saved below and
+                // passed when the torrent starts.
+            }
+        }
+        torrent.selectedFiles = files
+        kind = .torrent(torrent)
+    }
+
+    private func runTorrentDownload(_ initialTorrent: DownloadKind.Torrent) async throws {
+        guard let engine = _torrentEngine else {
+            throw TorrentEngineError.helperMissing(path: HelperLocations.rqbit)
+        }
+
+        _torrentActivityNote = nil
+        _smoothedDownSpeed = 0
+        _smoothedUpSpeed = 0
+
+        let runTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var torrent = initialTorrent
+
+            // 1. Try to reattach to an existing torrent in the engine (pause/resume
+            //    or relaunch with persisted engine session). No HTTP HEAD check.
+            var attached = false
+            do {
+                try await engine.resume(torrent.infoHash)
+                attached = true
+                if let details = try? await engine.details(of: torrent.infoHash) {
+                    self.torrentFiles = details.files
+                }
+            } catch TorrentEngineError.notFound {
+                attached = false
+            }
+
+            try Task.checkCancellation()
+            guard self.status == .starting else { return }
+
+            if !attached {
+                // 2. Load stored `.torrent` bytes, or probe the magnet if metadata
+                //    has not been fetched yet.
+                var torrentData: Data? = torrent.storedTorrentPath.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+                    ?? TorrentStorage.loadTorrentData(for: self.id, base: self._torrentsDirectory)
+
+                if torrentData == nil, let magnetURI = torrent.magnetURI {
+                    self._torrentActivityNote = "Getting torrent details…"
+                    let resolved = try await engine.probe(magnet: magnetURI)
+                    try Task.checkCancellation()
+                    guard self.status == .starting else { return }
+
+                    let savedURL = try? TorrentStorage.saveTorrentData(resolved.source, for: self.id, base: self._torrentsDirectory)
+                    torrentData = resolved.source
+                    torrent.storedTorrentPath = savedURL?.path ?? torrent.storedTorrentPath
+                    torrent.wholeTorrentSize = resolved.totalSize
+                    self.kind = .torrent(torrent)
+                    self.torrentFiles = resolved.files.enumerated().map { index, entry in
+                        TorrentDetails.File(
+                            path: entry.path,
+                            length: entry.length,
+                            isIncluded: torrent.selectedFiles?.contains(index) ?? true
+                        )
+                    }
+                    if let selected = torrent.selectedFiles {
+                        self.totalBytes = resolved.files.enumerated()
+                            .filter { selected.contains($0.offset) && !$0.element.isPadding }
+                            .reduce(0) { $0 + $1.element.length }
+                    } else {
+                        self.totalBytes = resolved.totalSize
+                    }
+
+                    // Adopt the torrent's real name if we only had a provisional one.
+                    if !torrent.hasClaimedFolder,
+                       let safeName = FilenameResolver.sanitize(resolved.name),
+                       FilenameResolver.shouldReplace(current: self.filenameSource, with: .torrentName) {
+                        if let resolveFolder = self._onTorrentMetadataResolved {
+                            self.destinationURL = resolveFolder(self, safeName)
+                        } else {
+                            self.destinationURL = self.destinationURL
+                                .deletingLastPathComponent()
+                                .appendingPathComponent(safeName, isDirectory: true)
+                        }
+                        self.originalName = safeName
+                        self.filenameSource = .torrentName
+                    }
+                }
+
+                // 3. Check free disk space against the whole torrent size before
+                //    allocating anything on disk (rqbit allocates deselected files too).
+                let requiredSpace = torrent.wholeTorrentSize ?? self.totalBytes
+                if let spaceMessage = TorrentDiskSpace.insufficientSpaceMessage(
+                    requiredBytes: requiredSpace,
+                    at: self.destinationURL,
+                    availableSpace: self._torrentAvailableSpaceProvider
+                ) {
+                    self._torrentActivityNote = spaceMessage
+                    self.status = .paused
+                    return
+                }
+
+                // 4. Claim the destination folder atomically if not already claimed.
+                if !torrent.hasClaimedFolder {
+                    guard !self.markDestinationMissingIfNeeded() else { return }
+                    let claimed = try DownloadDestination.createDirectory(at: self.destinationURL)
+                    if claimed != self.destinationURL { self.destinationURL = claimed }
+                    torrent.hasClaimedFolder = true
+                    self.kind = .torrent(torrent)
+                } else {
+                    guard !self.markDestinationMissingIfNeeded() else { return }
+                }
+
+                // 5. Add to the engine.
+                self._torrentActivityNote = "Finding peers…"
+                let source: TorrentSource
+                if let torrentData {
+                    source = .torrentFile(torrentData)
+                } else if let magnetURI = torrent.magnetURI {
+                    source = .magnet(magnetURI)
+                } else {
+                    throw TorrentEngineError.rejected("Missing torrent source.")
+                }
+
+                let details = try await engine.add(source, into: self.destinationURL, files: torrent.selectedFiles)
+                try Task.checkCancellation()
+                guard self.status == .starting else {
+                    try? await engine.pause(torrent.infoHash)
+                    return
+                }
+                self.torrentFiles = details.files
+            }
+
+            // 6. Stream snapshots until complete, paused, or errored.
+            self._startTime = self._startTime ?? Date()
+            self.status = .downloading
+
+            for try await snapshot in engine.updates(of: torrent.infoHash, every: self._torrentPollInterval) {
+                try Task.checkCancellation()
+                guard self.status == .downloading || self.status == .starting else { return }
+
+                self.applyTorrentSnapshot(snapshot)
+
+                switch snapshot.state {
+                case .initializing:
+                    self._torrentActivityNote = self.downloadedBytes > 0 ? "Checking files…" : "Finding peers…"
+                case .downloading:
+                    self._torrentActivityNote = snapshot.connectedPeers == 0 ? "Finding peers…" : nil
+                case .paused:
+                    self.speed = 0
+                    self.uploadSpeed = 0
+                    self._torrentActivityNote = nil
+                    return
+                case .error(let message):
+                    self.speed = 0
+                    self.uploadSpeed = 0
+                    self._torrentActivityNote = nil
+                    if TorrentDiskSpace.isDiskFullMessage(message) {
+                        throw DownloadError.torrentDiskFull
+                    }
+                    throw DownloadError.torrentEngineError(message)
+                case .seeding:
+                    if self.totalBytes > 0 {
+                        self.downloadedBytes = max(self.downloadedBytes, self.totalBytes)
+                    }
+                    self.speed = 0
+                    self._torrentActivityNote = nil
+                    self._endTime = Date()
+
+                    let policy = self._torrentSeedingPolicyProvider()
+                    switch policy {
+                    case .stopAtCompletion:
+                        try? await engine.remove(torrent.infoHash, deleteData: false)
+                        self.isSeeding = false
+                        self.uploadSpeed = 0
+                        self.connectedPeers = 0
+                        self.connectedSeeds = 0
+                        self.status = .completed
+                        return
+                    case .untilRatio, .untilDuration:
+                        self.isSeeding = true
+                        // Completed releases the concurrency slot and fires the
+                        // completion notification; seeding continues independently.
+                        self.status = .completed
+                        self.startTorrentSeedingWatcher(infoHash: torrent.infoHash, engine: engine, policy: policy)
+                        return
+                    }
+                }
+            }
+        }
+
+        _torrentActiveTask = runTask
+        defer { if _torrentActiveTask == runTask { _torrentActiveTask = nil } }
+        do {
+            try await runTask.value
+        } catch is CancellationError {
+            throw DownloadError.cancelled
+        }
+    }
+
+    private func applyTorrentSnapshot(_ snapshot: TorrentSnapshot) {
+        if snapshot.totalBytes > 0 {
+            totalBytes = snapshot.totalBytes
+        }
+        downloadedBytes = snapshot.downloadedBytes
+        uploadedBytes = snapshot.uploadedBytes
+        connectedPeers = snapshot.connectedPeers
+        connectedSeeds = snapshot.connectedSeeds
+        torrentFileProgress = snapshot.fileProgress
+
+        // Exponential smoothing so speeds and ETA do not jitter wildly.
+        let alpha = 0.3
+        _smoothedDownSpeed = _smoothedDownSpeed == 0
+            ? snapshot.downloadBytesPerSecond
+            : (alpha * snapshot.downloadBytesPerSecond + (1 - alpha) * _smoothedDownSpeed)
+        _smoothedUpSpeed = _smoothedUpSpeed == 0
+            ? snapshot.uploadBytesPerSecond
+            : (alpha * snapshot.uploadBytesPerSecond + (1 - alpha) * _smoothedUpSpeed)
+        speed = Int64(_smoothedDownSpeed.rounded())
+        uploadSpeed = Int64(_smoothedUpSpeed.rounded())
+    }
+
+    private func startTorrentSeedingWatcher(
+        infoHash: TorrentInfoHash,
+        engine: any TorrentEngine,
+        policy: SeedingPolicy
+    ) {
+        _torrentSeedingTask?.cancel()
+        let seedingStartedAt = Date()
+        let interval = _torrentPollInterval
+
+        _torrentSeedingTask = Task { @MainActor [weak self] in
+            do {
+                for try await snapshot in engine.updates(of: infoHash, every: interval) {
+                    guard let self, self.isSeeding, !Task.isCancelled else { break }
+                    self.applyTorrentSnapshot(snapshot)
+                    self.speed = 0
+
+                    let reachedLimit: Bool
+                    switch policy {
+                    case .stopAtCompletion:
+                        reachedLimit = true
+                    case .untilRatio(let target):
+                        reachedLimit = self.seedRatio >= target
+                    case .untilDuration(let duration):
+                        reachedLimit = Date().timeIntervalSince(seedingStartedAt) >= duration
+                    }
+
+                    if reachedLimit {
+                        await self.stopSeeding()
+                        return
+                    }
+                }
+            } catch {
+                // Helper stopped or torrent removed; clear seeding state.
+            }
+            if let self, self.isSeeding {
+                self.isSeeding = false
+                self.uploadSpeed = 0
+                self.connectedPeers = 0
+                self.connectedSeeds = 0
+            }
+        }
     }
 
     /// Returns true when the HEAD staleness check should run before resuming.
@@ -1458,8 +1825,14 @@ public final class DownloadTask: ObservableObject, Identifiable {
         if isMerging, status == .downloading {
             switch kind {
             case .stream: activityMessage = "Merging audio and video…"
-            case .direct, .youTube: activityMessage = "Combining parts…"
+            case .direct, .youTube, .torrent: activityMessage = "Combining parts…"
             }
+            return
+        }
+        if case .torrent = kind,
+           status == .starting || status == .downloading || status == .paused,
+           let note = _torrentActivityNote {
+            activityMessage = note
             return
         }
         switch status {
@@ -1932,6 +2305,17 @@ public final class DownloadTask: ObservableObject, Identifiable {
         case .stream:
             // Stops in-flight segment downloads; completed segments stay on disk.
             await StreamDownloader.shared.cancel(taskID: id)
+        case .torrent(let torrent):
+            _torrentActiveTask?.cancel()
+            _torrentActiveTask = nil
+            if let engine = _torrentEngine {
+                try? await engine.pause(torrent.infoHash)
+            }
+            speed = 0
+            uploadSpeed = 0
+            connectedPeers = 0
+            connectedSeeds = 0
+            _torrentActivityNote = nil
         case .direct:
             break
         }
@@ -2145,6 +2529,20 @@ public final class DownloadTask: ObservableObject, Identifiable {
             await YouTubeDownloader.shared.cancel(taskID: id)
         case .stream:
             await StreamDownloader.shared.cancel(taskID: id)
+        case .torrent(let torrent):
+            _torrentActiveTask?.cancel()
+            _torrentActiveTask = nil
+            _torrentSeedingTask?.cancel()
+            _torrentSeedingTask = nil
+            isSeeding = false
+            speed = 0
+            uploadSpeed = 0
+            connectedPeers = 0
+            connectedSeeds = 0
+            _torrentActivityNote = nil
+            if let engine = _torrentEngine {
+                try? await engine.remove(torrent.infoHash, deleteData: false)
+            }
         case .direct:
             break
         }
@@ -2182,6 +2580,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
             scratch.remove(for: id)
         }
         DestinationScratchFile.removeAll(for: id, in: destinationURL.deletingLastPathComponent())
+        if case .torrent = kind {
+            TorrentStorage.removeTaskDirectory(for: id, base: _torrentsDirectory)
+        }
     }
     
     func segmentDidProgress(_ segment: DownloadSegment, bytes: Int64) async {
@@ -2229,6 +2630,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         switch kind {
         case .stream:
             return .pieces(_streamPieces)
+        case .torrent:
+            return nil
         case .direct, .youTube:
             return .lanes(_segments.map { ($0.startByte...$0.endByte, $0.bytesOnDisk) }, totalBytes: totalBytes)
         }

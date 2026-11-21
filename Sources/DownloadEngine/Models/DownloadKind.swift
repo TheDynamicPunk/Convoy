@@ -54,8 +54,46 @@ public enum DownloadKind: Equatable, Sendable {
         }
     }
 
+    /// A BitTorrent download driven by `TorrentEngine` (rqbit in production).
+    public struct Torrent: Equatable, Sendable {
+        /// The v1 info hash identifying this torrent across restarts.
+        public let infoHash: TorrentInfoHash
+        /// Optional v2 SHA-256 hex digest for hybrid torrents.
+        public let infoHashV2: String?
+        /// Original magnet link, if the torrent came from one.
+        public let magnetURI: String?
+        /// Path to Convoy's stored `.torrent` copy under `torrentsDirectory/<id>/source.torrent`.
+        public var storedTorrentPath: String?
+        /// File indexes to download, or nil for all files.
+        public var selectedFiles: Set<Int>?
+        /// Whole-torrent payload size in bytes (used for upfront disk-space checks,
+        /// since rqbit allocates deselected files too). Nil until metadata resolves.
+        public var wholeTorrentSize: Int64?
+        /// Whether this task has already claimed its destination folder via `mkdir`.
+        public var hasClaimedFolder: Bool
+
+        public init(
+            infoHash: TorrentInfoHash,
+            infoHashV2: String? = nil,
+            magnetURI: String? = nil,
+            storedTorrentPath: String? = nil,
+            selectedFiles: Set<Int>? = nil,
+            wholeTorrentSize: Int64? = nil,
+            hasClaimedFolder: Bool = false
+        ) {
+            self.infoHash = infoHash
+            self.infoHashV2 = infoHashV2
+            self.magnetURI = magnetURI
+            self.storedTorrentPath = storedTorrentPath
+            self.selectedFiles = selectedFiles
+            self.wholeTorrentSize = wholeTorrentSize
+            self.hasClaimedFolder = hasClaimedFolder
+        }
+    }
+
     /// Plain HTTP/HTTPS/FTP download using the streaming probe and segment engine.
     case direct
     case youTube(YouTube)
     case stream(Stream)
+    case torrent(Torrent)
 }

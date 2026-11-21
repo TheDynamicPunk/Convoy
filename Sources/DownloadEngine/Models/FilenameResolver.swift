@@ -11,6 +11,7 @@ public enum FilenameSource: String, Codable, Sendable {
     case extractorMetadata
     case contentDisposition
     case mediaTitle
+    case torrentName
     case userProvided
 
     fileprivate var priority: Int {
@@ -29,6 +30,8 @@ public enum FilenameSource: String, Codable, Sendable {
         // it. Ordinary downloads never carry this source and still let
         // Content-Disposition win, which is right for them.
         case .mediaTitle: 60
+        // Authoritative metadata from a `.torrent` file or resolved magnet.
+        case .torrentName: 65
         case .userProvided: 100
         }
     }

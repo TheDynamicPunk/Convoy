@@ -39,6 +39,10 @@ public enum LinkInfoProbe {
     ///
     /// Cancelling the calling task cancels the request.
     public static func fetch(url: URL, headers: [String: String], timeout: TimeInterval = 8) async -> LinkInfo? {
+        // HTTP range probes must never run for magnets or non-HTTP links.
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return nil
+        }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         for (name, value) in headers where name.caseInsensitiveCompare("Range") != .orderedSame {

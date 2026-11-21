@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-enum TorrentFileError: Error, Equatable {
+public enum TorrentFileError: Error, Equatable, Sendable {
     case invalidBencode(Bencode.DecodeError)
     /// Valid bencode, but not a dictionary.
     case notATorrent
@@ -21,44 +21,44 @@ enum TorrentFileError: Error, Equatable {
 /// written by strangers, so a name or path component that is empty, `.`,
 /// `..` or contains a `/` makes the whole file unusable here instead of being
 /// passed on for every later step to remember to distrust.
-struct TorrentFile: Equatable, Sendable {
+public struct TorrentFile: Equatable, Sendable {
 
-    struct Entry: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable {
         /// Path components below the torrent's folder. A single-file torrent
         /// has one entry whose path is just its name.
-        let path: [String]
-        let length: Int64
+        public let path: [String]
+        public let length: Int64
         /// BEP 47 padding entry (`attr` containing `"p"`). Kept in `files` so
         /// file indexes stay aligned with the engine's `only_files` and
         /// `file_progress`, but excluded from `totalSize`.
-        let isPadding: Bool
+        public let isPadding: Bool
 
-        init(path: [String], length: Int64, isPadding: Bool = false) {
+        public init(path: [String], length: Int64, isPadding: Bool = false) {
             self.path = path
             self.length = length
             self.isPadding = isPadding
         }
 
-        var displayPath: String { path.joined(separator: "/") }
+        public var displayPath: String { path.joined(separator: "/") }
     }
 
     /// The identity: SHA-1 over the `info` dictionary's bytes exactly as written.
-    let infoHash: TorrentInfoHash
+    public let infoHash: TorrentInfoHash
     /// Not yet made safe to use as a file name beyond the path checks above.
-    let name: String
-    let files: [Entry]
-    let totalSize: Int64
+    public let name: String
+    public let files: [Entry]
+    public let totalSize: Int64
     /// `announce` and `announce-list` merged, each address once.
-    let trackers: [String]
-    let isMultiFile: Bool
+    public let trackers: [String]
+    public let isMultiFile: Bool
     /// Private torrents forbid peer sources other than their own trackers.
-    let isPrivate: Bool
+    public let isPrivate: Bool
     /// The bytes this was read from, as received. A torrent resolved from a
     /// magnet link is saved and added from these, so what the engine is given
     /// is exactly what the swarm sent, and its hash is unchanged.
-    let source: Data
+    public let source: Data
 
-    init(_ data: Data) throws {
+    public init(_ data: Data) throws {
         // A copy, so offsets into it are the offsets the reader reports even
         // when the caller handed over a slice of something larger.
         let input = Data(data)

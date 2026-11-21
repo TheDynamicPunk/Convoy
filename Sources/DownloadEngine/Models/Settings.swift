@@ -26,6 +26,14 @@ public final class AppSettings: ObservableObject {
         case downloadCategoriesEnabled
         case downloadCategories
         case hideDockIcon
+        case torrentSeedingPolicy
+        case torrentSeedRatioLimit
+        case torrentSeedDurationMinutes
+        case torrentUploadLimitKBps
+        case torrentListenPort
+        case torrentEnableUPnP
+        case torrentEnableLSD
+        case torrentPersistDHT
     }
     
     @AppStorage(Key.downloadDirectory.rawValue) public var downloadDirectory: String = ""
@@ -99,6 +107,31 @@ public final class AppSettings: ObservableObject {
     /// list is encoded into one string; use `downloadCategories` instead of
     /// reading this.
     @AppStorage(Key.downloadCategories.rawValue) private var downloadCategoriesJSON: String = ""
+
+    // MARK: - Torrents
+
+    /// How long to seed after a torrent finishes: `"stopAtCompletion"`, `"ratio"`, or `"duration"`.
+    @AppStorage(Key.torrentSeedingPolicy.rawValue) public var torrentSeedingPolicyRaw: String = "stopAtCompletion"
+    @AppStorage(Key.torrentSeedRatioLimit.rawValue) public var torrentSeedRatioLimit: Double = 1.0
+    @AppStorage(Key.torrentSeedDurationMinutes.rawValue) public var torrentSeedDurationMinutes: Int = 60
+    /// Upload speed limit in KB/s (0 = unlimited). Applied on helper launch.
+    @AppStorage(Key.torrentUploadLimitKBps.rawValue) public var torrentUploadLimitKBps: Int = 0
+    /// Peer listening port (0 = random free port on each launch).
+    @AppStorage(Key.torrentListenPort.rawValue) public var torrentListenPort: Int = 0
+    @AppStorage(Key.torrentEnableUPnP.rawValue) public var torrentEnableUPnP: Bool = false
+    @AppStorage(Key.torrentEnableLSD.rawValue) public var torrentEnableLSD: Bool = false
+    @AppStorage(Key.torrentPersistDHT.rawValue) public var torrentPersistDHT: Bool = false
+
+    public var seedingPolicy: SeedingPolicy {
+        switch torrentSeedingPolicyRaw {
+        case "ratio":
+            return .untilRatio(max(0.05, torrentSeedRatioLimit))
+        case "duration":
+            return .untilDuration(TimeInterval(max(1, torrentSeedDurationMinutes) * 60))
+        default:
+            return .stopAtCompletion
+        }
+    }
 
     /// The person's categories in priority order (first match wins).
     ///

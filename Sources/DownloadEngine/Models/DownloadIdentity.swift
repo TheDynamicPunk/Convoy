@@ -94,6 +94,8 @@ extension DownloadTask {
         case .stream:
             // Stream totals are estimates; only direct downloads compare size.
             return DownloadIdentity(url: url, name: originalName)
+        case .torrent(let torrent):
+            return DownloadIdentity(url: url, name: originalName, torrentInfoHash: torrent.infoHash)
         }
     }
 }

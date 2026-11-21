@@ -8,11 +8,11 @@ import CryptoKit
 /// it as a SHA-1 digest. Duplicate detection compares hashes, so a value that
 /// could still be upper- or lowercase, or hex or base32, would call the same
 /// torrent two different things.
-struct TorrentInfoHash: Hashable, Sendable, CustomStringConvertible {
+public struct TorrentInfoHash: Hashable, Sendable, CustomStringConvertible {
     /// 40 lowercase hex digits.
-    let hex: String
+    public let hex: String
 
-    init?(hex text: String) {
+    public init?(hex text: String) {
         guard text.utf8.count == 40, Self.isHexDigits(text) else { return nil }
         self.hex = text.lowercased()
     }
@@ -23,7 +23,7 @@ struct TorrentInfoHash: Hashable, Sendable, CustomStringConvertible {
 
     /// RFC 4648 base32, 32 characters with no padding (160 bits, exactly 20
     /// bytes), either case. Magnet links from older clients use this form.
-    init?(base32 text: String) {
+    public init?(base32 text: String) {
         let input = Array(text.utf8)
         guard input.count == 32 else { return nil }
 
@@ -50,7 +50,7 @@ struct TorrentInfoHash: Hashable, Sendable, CustomStringConvertible {
         self.hex = bytes.hexString
     }
 
-    var description: String { hex }
+    public var description: String { hex }
 
     /// Whether every character is a hex digit, either case.
     static func isHexDigits(_ text: some StringProtocol) -> Bool {

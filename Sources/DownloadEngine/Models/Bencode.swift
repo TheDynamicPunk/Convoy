@@ -11,14 +11,14 @@ import Foundation
 /// bounded nesting, every length checked against what is actually there before
 /// anything is allocated, and duplicate keys refused so two readings of one
 /// file cannot disagree about which `info` they mean.
-enum Bencode {
+public enum Bencode {
 
     /// Far larger than any real `.torrent`, which is rarely over a few MB.
     static let maxInputSize = 16 << 20
     /// Real torrents nest about six deep.
     static let maxDepth = 64
 
-    enum DecodeError: Error, Equatable {
+    public enum DecodeError: Error, Equatable, Sendable {
         case empty
         case tooLarge
         /// The input ended in the middle of a value.
