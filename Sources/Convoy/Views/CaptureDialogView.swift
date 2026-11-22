@@ -42,6 +42,9 @@ final class CaptureDialogModel: ObservableObject {
     /// The last name this model put in the field itself (initially, or from
     /// the probe). Anything else in the field was typed by the person.
     private var autoName: String
+    /// Parsed `.torrent` metadata (from a `.torrent` file or a completed magnet
+    /// probe), forwarded to `TorrentAddRequest` so the engine doesn't re-probe.
+    private var resolvedTorrent: TorrentFile?
 
     init(capture: CapturedDownload) {
         self.capture = capture
@@ -53,10 +56,15 @@ final class CaptureDialogModel: ObservableObject {
         if let torrent = capture.torrent {
             switch torrent {
             case .torrentFile(let data):
-                if let parsed = try? TorrentFile(data) {
-                    applyParsedTorrent(parsed)
+                if let preParsed = capture.parsedTorrent {
+                    applyParsedTorrent(preParsed)
                 } else {
-                    torrentFatalError = "This file is not a valid torrent."
+                    do {
+                        let parsed = try TorrentFile(data)
+                        applyParsedTorrent(parsed)
+                    } catch {
+                        torrentFatalError = error.localizedDescription
+                    }
                 }
             case .magnet(let uri):
                 if let parsed = try? MagnetURI(uri) {
@@ -85,6 +93,7 @@ final class CaptureDialogModel: ObservableObject {
     }
 
     private func applyParsedTorrent(_ parsed: TorrentFile) {
+        resolvedTorrent = parsed
         torrentInfoHashHex = parsed.infoHash.hex
         torrentTotalSize = parsed.totalSize
         let items = TorrentFileItem.visibleItems(from: parsed.files)
@@ -147,6 +156,7 @@ final class CaptureDialogModel: ObservableObject {
         if capture.isTorrent && !torrentFiles.isEmpty && selectedTorrentFiles.count < torrentFiles.count {
             choices.selectedTorrentFiles = selectedTorrentFiles
         }
+        choices.resolvedTorrentMetadata = resolvedTorrent
         return choices
     }
 }

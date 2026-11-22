@@ -86,27 +86,62 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
         enqueue(capture)
     }
 
-    /// Opens a local `.torrent` file in the capture dialog.
+    /// Opens a local `.torrent` file in the capture dialog. Reads and parses
+    /// off `@MainActor` with a hard file-size cap so a huge or malformed file
+    /// can never freeze or OOM the app.
     func handleTorrentFile(at fileURL: URL, initialFolder: URL? = nil) {
-        let data: Data
-        do {
-            data = try Data(contentsOf: fileURL)
-        } catch {
-            captureLogger.error("failed to read .torrent file at \(fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return
+        let fallbackName = fileURL.deletingPathExtension().lastPathComponent
+        Task.detached(priority: .userInitiated) {
+            if let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+               Int64(size) > TorrentFile.maxFileSizeBytes {
+                captureLogger.warning("rejected oversized .torrent file (\(size, privacy: .public) bytes) at \(fileURL.path, privacy: .public)")
+                return
+            }
+            let data: Data
+            do {
+                data = try Data(contentsOf: fileURL)
+            } catch {
+                captureLogger.error("failed to read .torrent file at \(fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            if Int64(data.count) > TorrentFile.maxFileSizeBytes {
+                captureLogger.warning("rejected oversized .torrent data (\(data.count, privacy: .public) bytes)")
+                return
+            }
+            let parsed = try? TorrentFile(data)
+            await MainActor.run {
+                self.handleTorrentData(
+                    data,
+                    parsed: parsed,
+                    fallbackName: fallbackName,
+                    sourceURL: fileURL,
+                    initialFolder: initialFolder
+                )
+            }
         }
-        let parsed = try? TorrentFile(data)
+    }
+
+    /// Enqueues an already-read `.torrent` payload into the capture dialog
+    /// (or notifies via toast if the torrent is already in the download list).
+    func handleTorrentData(
+        _ data: Data,
+        parsed: TorrentFile?,
+        fallbackName: String,
+        sourceURL: URL,
+        initialFolder: URL? = nil
+    ) {
         if let parsed, let existing = DownloadManager.shared.existingTorrent(infoHash: parsed.infoHash) {
             NotificationCenter.default.post(name: .torrentAlreadyAdded, object: existing)
             return
         }
-        let name = parsed?.name ?? fileURL.deletingPathExtension().lastPathComponent
+        let name = parsed?.name ?? fallbackName
         let capture = CapturedDownload(
-            url: fileURL,
+            url: sourceURL,
             suggestedFilename: name,
             filenameSource: .torrentName,
             expectedSize: parsed?.totalSize,
             torrent: .torrentFile(data),
+            parsedTorrent: parsed,
             initialFolder: initialFolder
         )
         enqueue(capture)

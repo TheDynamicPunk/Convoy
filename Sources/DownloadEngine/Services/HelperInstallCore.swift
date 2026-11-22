@@ -51,22 +51,41 @@ enum HelperInstallCore {
         return (tempURL, artifact)
     }
 
-    /// Moves a verified single-file helper into place, executable and cleared
-    /// of the quarantine mark.
+    /// Stages a verified single-file helper onto the destination volume, sets
+    /// permissions and clears quarantine before atomically swapping it into
+    /// place so an existing working binary is never destroyed on error.
     static func installVerifiedBinary(from tempURL: URL, to destinationPath: String) throws {
-        try? FileManager.default.removeItem(atPath: destinationPath)
-        try FileManager.default.moveItem(at: tempURL, to: URL(fileURLWithPath: destinationPath))
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationPath)
+        let fm = FileManager.default
+        let destURL = URL(fileURLWithPath: destinationPath)
+        let parentDir = destURL.deletingLastPathComponent()
+        let stagedURL = parentDir.appendingPathComponent(".\(destURL.lastPathComponent).install-\(UUID().uuidString)")
 
-        // GitHub-downloaded
-        // binaries can carry a com.apple.quarantine xattr that trips
-        // Gatekeeper's "cannot be opened because the developer cannot be
-        // verified" refusal the first time we try to exec it — confirmed as
-        // a real, reported problem for this exact yt-dlp_macos binary
-        // (yt-dlp/yt-dlp#2374), not a hypothetical. A dev machine that's
-        // already run these binaries before won't show this; a fresh
-        // install hitting it on someone's first-ever YouTube click would.
-        stripQuarantine(atPath: destinationPath, recursive: false)
+        do {
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            do {
+                try fm.moveItem(at: tempURL, to: stagedURL)
+            } catch {
+                // Cross-volume fallback (e.g., /tmp on a different volume).
+                try fm.copyItem(at: tempURL, to: stagedURL)
+                try? fm.removeItem(at: tempURL)
+            }
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stagedURL.path)
+
+            // GitHub-downloaded binaries can carry a com.apple.quarantine xattr
+            // that trips Gatekeeper's refusal on first exec (yt-dlp/yt-dlp#2374).
+            // Strip it on the staged file before the binary becomes visible at
+            // `destinationPath`.
+            stripQuarantine(atPath: stagedURL.path, recursive: false)
+
+            if fm.fileExists(atPath: destURL.path) {
+                _ = try fm.replaceItemAt(destURL, withItemAt: stagedURL)
+            } else {
+                try fm.moveItem(at: stagedURL, to: destURL)
+            }
+        } catch {
+            try? fm.removeItem(at: stagedURL)
+            throw error
+        }
     }
 
     /// Removes `com.apple.quarantine` from a file, or from a whole tree.

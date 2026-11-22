@@ -691,6 +691,9 @@ public final class DownloadManager: ObservableObject {
                     .appendingPathComponent(safeName, isDirectory: true)
                 return self.deduplicatedDestination(for: candidate, isDirectory: true, excluding: resolvingTask.id)
             },
+            onSelectionChanged: { [weak self] in
+                self?.savePersistedTasks()
+            },
             initialFiles: initialFiles,
             initialUploadedBytes: initialUploadedBytes,
             initialPieceBitfield: initialPieceBitfield

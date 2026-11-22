@@ -202,4 +202,19 @@ final class TorrentFileTests: XCTestCase {
         let info = "d9:file treede12:meta versioni2e4:name1:x12:piece lengthi16384ee"
         assertThrows(torrent(info: info), .v2Only)
     }
+
+    func testPieceCountMismatchIsRejected() {
+        let fortyBytes = String(repeating: "a", count: 40)
+        let info = "d6:lengthi5e4:name3:abc12:piece lengthi16384e6:pieces40:\(fortyBytes)e"
+        assertThrows(torrent(info: info), .invalidField("pieces"))
+    }
+
+    func testUnsafePathRejectsBackslashColonControlAndBiDiCharacters() {
+        assertThrows(torrent(info: "d6:lengthi5e4:name3:a\\b12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a\\b"))
+        assertThrows(torrent(info: "d6:lengthi5e4:name3:a:b12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a:b"))
+        assertThrows(torrent(info: "d6:lengthi5e4:name4:a\nb112:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a\nb1"))
+        let spoofed = "invoice\u{202E}fdp.exe"
+        let spoofedLen = spoofed.utf8.count
+        assertThrows(torrent(info: "d6:lengthi5e4:name\(spoofedLen):\(spoofed)12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath(spoofed))
+    }
 }

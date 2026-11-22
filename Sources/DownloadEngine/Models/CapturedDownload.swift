@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let capturedDownloadLogger = Logger(subsystem: "Convoy", category: "CapturedDownload")
 
 /// A download request that arrived from the browser — the extension's button,
 /// the context menu, an intercepted native download, or a captured HLS/DASH
@@ -32,6 +35,9 @@ public struct CapturedDownload: Identifiable {
     public let stream: DuplicateDownloadConflict.StreamInfo?
     /// Non-nil for a BitTorrent capture (magnet link or `.torrent` file).
     public let torrent: TorrentSource?
+    /// Pre-parsed `.torrent` metadata when already decoded off the main actor,
+    /// avoiding redundant synchronous parsing in `CaptureDialogModel`.
+    public let parsedTorrent: TorrentFile?
     /// Pre-selected destination folder when handed off from Add Downloads.
     public let initialFolder: URL?
 
@@ -48,6 +54,7 @@ public struct CapturedDownload: Identifiable {
         segmentCount: Int? = nil,
         stream: DuplicateDownloadConflict.StreamInfo? = nil,
         torrent: TorrentSource? = nil,
+        parsedTorrent: TorrentFile? = nil,
         initialFolder: URL? = nil
     ) {
         self.url = url
@@ -60,6 +67,7 @@ public struct CapturedDownload: Identifiable {
         self.segmentCount = segmentCount
         self.stream = stream
         self.torrent = torrent
+        self.parsedTorrent = parsedTorrent
         self.initialFolder = initialFolder
     }
 
@@ -87,17 +95,22 @@ public struct CaptureChoices {
     public var startsAutomatically: Bool?
     /// File indexes selected for a torrent download; nil downloads all files.
     public var selectedTorrentFiles: Set<Int>?
+    /// Metadata resolved during the capture dialog's magnet probe, carried into
+    /// `TorrentAddRequest` so the download doesn't probe the swarm a second time.
+    public var resolvedTorrentMetadata: TorrentFile?
 
     public init(
         filename: String? = nil,
         folder: URL? = nil,
         startsAutomatically: Bool? = nil,
-        selectedTorrentFiles: Set<Int>? = nil
+        selectedTorrentFiles: Set<Int>? = nil,
+        resolvedTorrentMetadata: TorrentFile? = nil
     ) {
         self.filename = filename
         self.folder = folder
         self.startsAutomatically = startsAutomatically
         self.selectedTorrentFiles = selectedTorrentFiles
+        self.resolvedTorrentMetadata = resolvedTorrentMetadata
     }
 }
 
@@ -144,12 +157,20 @@ extension DownloadManager {
         if let torrentSource = capture.torrent {
             let request = TorrentAddRequest(
                 source: torrentSource,
+                metadata: choices.resolvedTorrentMetadata ?? capture.parsedTorrent,
                 destinationFolder: baseFolder,
                 customName: choices.filename,
                 selectedFiles: choices.selectedTorrentFiles,
+                folderIsExplicit: folderIsExplicit,
                 startAutomatically: choices.startsAutomatically
             )
-            _ = try? await addTorrentDownload(request)
+            do {
+                _ = try await addTorrentDownload(request)
+            } catch is DownloadConflictError {
+                // Expected when the torrent is already in the list.
+            } catch {
+                capturedDownloadLogger.error("Failed to add captured torrent: \(error.localizedDescription, privacy: .public)")
+            }
         } else if let stream = capture.stream {
             _ = try? await addStreamDownload(
                 url: capture.url,

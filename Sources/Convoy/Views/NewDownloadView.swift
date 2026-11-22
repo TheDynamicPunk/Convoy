@@ -995,27 +995,45 @@ struct AddDownloadsView: View {
 
     private func handleDroppedTorrentFiles(_ providers: [NSItemProvider]) -> Bool {
         let chosenFolder = destination
-        var accepted = false
-        for provider in providers {
-            guard let matchType = Self.torrentDropTypes.first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) else {
-                continue
+        let matched: [(NSItemProvider, UTType)] = providers.compactMap { provider in
+            guard let type = Self.torrentDropTypes.first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) else {
+                return nil
             }
-            accepted = true
+            return (provider, type)
+        }
+        guard !matched.isEmpty else { return false }
+
+        let group = DispatchGroup()
+        for (provider, matchType) in matched {
+            group.enter()
             provider.loadFileRepresentation(forTypeIdentifier: matchType.identifier) { url, _ in
+                defer { group.leave() }
                 guard let url, url.pathExtension.lowercased() == "torrent" else { return }
-                // Copy bytes before `loadFileRepresentation`'s temporary URL is removed.
-                guard let data = try? Data(contentsOf: url) else { return }
-                let tempCopy = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
-                try? data.write(to: tempCopy)
+                if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+                   Int64(size) > TorrentFile.maxFileSizeBytes {
+                    logger.warning("Ignored oversized dropped .torrent file (\(size, privacy: .public) bytes)")
+                    return
+                }
+                guard let data = try? Data(contentsOf: url),
+                      Int64(data.count) <= TorrentFile.maxFileSizeBytes else { return }
+                let parsed = try? TorrentFile(data)
+                let fallbackName = url.deletingPathExtension().lastPathComponent
+                let sourceURL = url
                 Task { @MainActor in
-                    CaptureCoordinator.shared.handleTorrentFile(at: tempCopy, initialFolder: chosenFolder)
-                    try? FileManager.default.removeItem(at: tempCopy)
-                    dismiss()
+                    CaptureCoordinator.shared.handleTorrentData(
+                        data,
+                        parsed: parsed,
+                        fallbackName: fallbackName,
+                        sourceURL: sourceURL,
+                        initialFolder: chosenFolder
+                    )
                 }
             }
         }
-        return accepted
+        group.notify(queue: .main) {
+            dismiss()
+        }
+        return true
     }
 }
 

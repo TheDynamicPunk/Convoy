@@ -317,6 +317,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
     private var _torrentSeedingPolicyProvider: @MainActor () -> SeedingPolicy = { AppSettings.shared.seedingPolicy }
     private var _torrentAvailableSpaceProvider: ((URL) -> Int64?)?
     private var _onTorrentMetadataResolved: (@MainActor (DownloadTask, String) -> URL)?
+    private var _onTorrentSelectionChanged: (@MainActor () -> Void)?
     private var _torrentActiveTask: Task<Void, Error>?
     private var _torrentSeedingTask: Task<Void, Never>?
     private var _torrentActivityNote: String? {
@@ -951,6 +952,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
         seedingPolicyProvider: (@MainActor () -> SeedingPolicy)? = nil,
         availableSpaceProvider: ((URL) -> Int64?)? = nil,
         onMetadataResolved: (@MainActor (DownloadTask, String) -> URL)? = nil,
+        onSelectionChanged: (@MainActor () -> Void)? = nil,
         initialFiles: [TorrentDetails.File] = [],
         initialUploadedBytes: Int64 = 0,
         initialPieceBitfield: Data? = nil
@@ -964,6 +966,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
         }
         self._torrentAvailableSpaceProvider = availableSpaceProvider
         self._onTorrentMetadataResolved = onMetadataResolved
+        self._onTorrentSelectionChanged = onSelectionChanged
         if !initialFiles.isEmpty {
             self.torrentFiles = initialFiles
         }
@@ -996,19 +999,45 @@ public final class DownloadTask: ObservableObject, Identifiable {
     /// and at runtime while active.
     public func setSelectedTorrentFiles(_ files: Set<Int>) async throws {
         guard case .torrent(var torrent) = kind else { return }
+        guard !files.isEmpty else {
+            throw TorrentEngineError.rejected("No files were selected.")
+        }
+        if !torrentFiles.isEmpty, let invalid = files.first(where: { !torrentFiles.indices.contains($0) }) {
+            throw TorrentEngineError.rejected("file id \(invalid) is out of range")
+        }
+
+        var syncedFromEngine = false
         if let engine = _torrentEngine {
             do {
                 try await engine.setSelectedFiles(files, of: torrent.infoHash)
                 if let details = try? await engine.details(of: torrent.infoHash) {
                     torrentFiles = details.files
+                    syncedFromEngine = true
                 }
             } catch TorrentEngineError.notFound {
-                // Not added to the engine yet; selection is saved below and
-                // passed when the torrent starts.
+                // Not added to the engine yet; selection is synced locally
+                // below and passed when the torrent starts.
+            }
+        }
+        if !syncedFromEngine && !torrentFiles.isEmpty {
+            torrentFiles = torrentFiles.enumerated().map { index, file in
+                TorrentDetails.File(
+                    path: file.path,
+                    length: file.length,
+                    isIncluded: files.contains(index),
+                    isPadding: file.isPadding
+                )
+            }
+            let selectedTotal = torrentFiles.enumerated()
+                .filter { files.contains($0.offset) && !$0.element.isPadding }
+                .reduce(Int64(0)) { $0 + $1.element.length }
+            if selectedTotal > 0 {
+                totalBytes = selectedTotal
             }
         }
         torrent.selectedFiles = files
         kind = .torrent(torrent)
+        _onTorrentSelectionChanged?()
     }
 
     private func runTorrentDownload(_ initialTorrent: DownloadKind.Torrent) async throws {
@@ -2587,6 +2616,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
         case .stream:
             await StreamDownloader.shared.cancel(taskID: id)
         case .torrent(let torrent):
+            let wasCompleted = status == .completed
             _torrentActiveTask?.cancel()
             _torrentActiveTask = nil
             _torrentSeedingTask?.cancel()
@@ -2597,8 +2627,14 @@ public final class DownloadTask: ObservableObject, Identifiable {
             connectedPeers = 0
             connectedSeeds = 0
             _torrentActivityNote = nil
+            let deletePartial = !wasCompleted && torrent.hasClaimedFolder
             if let engine = _torrentEngine {
-                try? await engine.remove(torrent.infoHash, deleteData: false)
+                try? await engine.remove(torrent.infoHash, deleteData: deletePartial)
+            }
+            // Remove the claimed partial folder for unfinished torrents so
+            // pre-allocated files aren't stranded on disk.
+            if deletePartial {
+                try? FileManager.default.removeItem(at: destinationURL)
             }
         case .direct:
             break

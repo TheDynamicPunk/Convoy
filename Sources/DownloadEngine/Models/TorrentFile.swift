@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-public enum TorrentFileError: Error, Equatable, Sendable {
+public enum TorrentFileError: Error, LocalizedError, Equatable, Sendable {
     case invalidBencode(Bencode.DecodeError)
     /// Valid bencode, but not a dictionary.
     case notATorrent
@@ -12,6 +12,21 @@ public enum TorrentFileError: Error, Equatable, Sendable {
     case unsafePath(String)
     /// A version 2 torrent with no v1 hash to identify it by.
     case v2Only
+    /// The `.torrent` file exceeds the maximum allowed metadata size.
+    case fileTooLarge(Int64)
+
+    public var errorDescription: String? {
+        switch self {
+        case .v2Only:
+            return "BitTorrent v2-only torrents aren't supported yet."
+        case .unsafePath:
+            return "This torrent contains an unsafe file path."
+        case .fileTooLarge:
+            return "This .torrent file is too large to open."
+        case .invalidBencode, .notATorrent, .missingField, .invalidField:
+            return "This file is not a valid torrent."
+        }
+    }
 }
 
 /// What a `.torrent` file says: which torrent it is, what is in it, and where
@@ -42,6 +57,11 @@ public struct TorrentFile: Equatable, Sendable {
         public var displayPath: String { path.joined(separator: "/") }
     }
 
+    /// Hard cap on `.torrent` metadata file size to prevent UI freezes and OOMs.
+    public static let maxFileSizeBytes: Int64 = 25 * 1024 * 1024
+    /// Hard cap on SHA-1 piece entries in `info.pieces`.
+    public static let maxPieceCount = 1_000_000
+
     /// The identity: SHA-1 over the `info` dictionary's bytes exactly as written.
     public let infoHash: TorrentInfoHash
     /// Not yet made safe to use as a file name beyond the path checks above.
@@ -62,6 +82,9 @@ public struct TorrentFile: Equatable, Sendable {
     public let source: Data
 
     public init(_ data: Data) throws {
+        if Int64(data.count) > Self.maxFileSizeBytes {
+            throw TorrentFileError.fileTooLarge(Int64(data.count))
+        }
         // A copy, so offsets into it are the offsets the reader reports even
         // when the caller handed over a slice of something larger.
         let input = Data(data)
@@ -110,10 +133,22 @@ public struct TorrentFile: Equatable, Sendable {
         }
 
         var total: Int64 = 0
-        for entry in entries where !entry.isPadding {
-            let (sum, overflow) = total.addingReportingOverflow(entry.length)
-            if overflow { throw TorrentFileError.invalidField("length") }
-            total = sum
+        var streamTotal: Int64 = 0
+        for entry in entries {
+            let (streamSum, streamOverflow) = streamTotal.addingReportingOverflow(entry.length)
+            if streamOverflow { throw TorrentFileError.invalidField("length") }
+            streamTotal = streamSum
+            if !entry.isPadding {
+                let (sum, overflow) = total.addingReportingOverflow(entry.length)
+                if overflow { throw TorrentFileError.invalidField("length") }
+                total = sum
+            }
+        }
+
+        let pieceCount = pieces.count / 20
+        let expectedPieces: Int64 = streamTotal == 0 ? 0 : ((streamTotal - 1) / pieceLength) + 1
+        guard pieceCount <= Self.maxPieceCount, Int64(pieceCount) == expectedPieces else {
+            throw TorrentFileError.invalidField("pieces")
         }
 
         var announced: [String] = []
@@ -126,7 +161,7 @@ public struct TorrentFile: Equatable, Sendable {
         self.name = name
         self.files = entries
         self.totalSize = total
-        self.pieceCount = pieces.count / 20
+        self.pieceCount = pieceCount
         self.trackers = TorrentTrackers.cleaned(announced)
         self.isMultiFile = multiFile
         self.isPrivate = info["private"]?.integer == 1
@@ -150,8 +185,20 @@ public struct TorrentFile: Equatable, Sendable {
 
     private static func validate(component: String) throws {
         if component.isEmpty || component == "." || component == ".."
-            || component.contains("/") || component.contains("\0") {
+            || component.contains("/") || component.contains("\\")
+            || component.contains(":") || component.contains("\0") {
             throw TorrentFileError.unsafePath(component)
+        }
+        for scalar in component.unicodeScalars {
+            let v = scalar.value
+            // Reject ASCII/Unicode control characters and BiDi override/isolate
+            // controls (e.g. U+202E RLO) that can spoof file extensions.
+            if v < 0x20 || v == 0x7F || scalar.properties.generalCategory == .control
+                || (0x202A...0x202E).contains(v)
+                || (0x2066...0x2069).contains(v)
+                || v == 0x200E || v == 0x200F || v == 0x061C {
+                throw TorrentFileError.unsafePath(component)
+            }
         }
     }
 }

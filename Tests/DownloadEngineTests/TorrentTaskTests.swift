@@ -700,4 +700,57 @@ final class TorrentTaskTests: XCTestCase {
         XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "duration"), .untilDuration)
         XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "unknown"), .stopAtCompletion)
     }
+
+    func testSetSelectedTorrentFilesBeforeStartSyncsUIRejectsEmptyAndPersists() async throws {
+        let engine = FakeTorrentEngine()
+        let manager = makeManager(engine: engine)
+
+        let task = try await manager.addTorrentDownload(TorrentAddRequest(
+            source: .torrentFile(TorrentFixtures.dataB),
+            destinationFolder: downloadsDir,
+            startAutomatically: false
+        ))
+        XCTAssertEqual(task.torrentFiles.map(\.isIncluded), [true, true])
+
+        // Empty selection is rejected up front even before adding to engine.
+        do {
+            try await task.setSelectedTorrentFiles([])
+            XCTFail("Expected empty file selection to be rejected")
+        } catch let error as TorrentEngineError {
+            if case .rejected = error { } else { XCTFail("Unexpected error: \(error)") }
+        }
+
+        // Selecting a subset updates torrentFiles and totalBytes locally and persists.
+        try await task.setSelectedTorrentFiles([1])
+        XCTAssertEqual(task.torrentFiles.map(\.isIncluded), [false, true])
+        XCTAssertEqual(task.totalBytes, 4)
+
+        let saved = try Data(contentsOf: persistenceURL)
+        let decoded = try JSONDecoder().decode([PersistedDownloadTask].self, from: saved)
+        XCTAssertEqual(decoded.first?.torrent?.selectedFiles, [1])
+    }
+
+    func testCancelUnfinishedTorrentDeletesClaimedPartialFolder() async throws {
+        let engine = FakeTorrentEngine()
+        let manager = makeManager(engine: engine)
+
+        let task = try await manager.addTorrentDownload(TorrentAddRequest(
+            source: .torrentFile(TorrentFixtures.dataA),
+            destinationFolder: downloadsDir,
+            startAutomatically: false
+        ))
+
+        let run = Task { try? await manager.resumeDownload(task) }
+        let started = await waitUntil { task.status == .downloading }
+        XCTAssertTrue(started)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: task.destinationURL.path))
+
+        await manager.cancelDownload(task)
+        await run.value
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: task.destinationURL.path),
+            "Cancelling an unfinished torrent should remove its claimed partial folder"
+        )
+    }
 }
