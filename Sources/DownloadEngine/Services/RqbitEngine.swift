@@ -81,6 +81,7 @@ actor RqbitEngine: TorrentEngine {
         let id = UUID()
         let process: ManagedProcess
         let client: RqbitClient
+        let launchedConfig: TorrentHelperConfig
     }
 
     /// A launch that found its port taken between choosing it and the helper
@@ -143,6 +144,11 @@ actor RqbitEngine: TorrentEngine {
         arguments += extra
         arguments += ["server", "start", "--persistence-location", sessionDirectory.path, defaultOutputFolder.path]
         return arguments
+    }
+
+    func activeHelperConfig() async -> TorrentHelperConfig? {
+        guard let running, running.process.isRunning else { return nil }
+        return running.launchedConfig
     }
 
     /// Stops the helper and waits for it to be gone, including one that is
@@ -322,7 +328,7 @@ actor RqbitEngine: TorrentEngine {
         let secret: String
         do {
             var chosenAPI = try LoopbackHelper.freePort()
-            if let fixedPeer = activeOptions.peerPort, fixedPeer >= 1024 {
+            if let fixedPeer = activeOptions.peerPort, TorrentHelperConfig.listenPortRange.contains(Int(fixedPeer)) {
                 var tries = 0
                 while chosenAPI == fixedPeer && tries < 10 {
                     chosenAPI = try LoopbackHelper.freePort()
@@ -387,7 +393,14 @@ actor RqbitEngine: TorrentEngine {
             // before this resumed. Nothing suspends between this check and
             // the caller recording the helper, so a stop cannot slip in after.
             try Task.checkCancellation()
-            return Running(process: process, client: client)
+            let launchedConfig = TorrentHelperConfig(
+                uploadLimitBytesPerSecond: activeOptions.uploadLimit,
+                listenPort: activeOptions.peerPort,
+                enableUPnP: activeOptions.enableUPnP,
+                enableLSD: activeOptions.enableLSD,
+                persistDHT: activeOptions.persistDHT
+            )
+            return Running(process: process, client: client, launchedConfig: launchedConfig)
         } catch {
             client.invalidate()
             process.stop()

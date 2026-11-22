@@ -18,6 +18,9 @@ public final class DownloadManager: ObservableObject {
     /// Whether the launch measurement was over the notice threshold. Decided
     /// once; later measurements can hide the notice but never raise it.
     @Published public private(set) var temporaryStorageNoticeDueAtLaunch = false
+    /// True when the `rqbit` helper is currently running with launch-time
+    /// settings that differ from the saved `AppSettings`.
+    @Published public private(set) var torrentHelperNeedsRestart = false
     
     private let settings = AppSettings.shared
     /// Read live from settings rather than captured once at init — a
@@ -91,15 +94,13 @@ public final class DownloadManager: ObservableObject {
         self.init(
             torrentEngine: RqbitEngine(optionsProvider: {
                 await MainActor.run {
-                    let s = AppSettings.shared
-                    let uploadBytes = s.torrentUploadLimitKBps > 0 ? s.torrentUploadLimitKBps * 1024 : nil
-                    let fixedPort: UInt16? = (1024...65535).contains(s.torrentListenPort) ? UInt16(s.torrentListenPort) : nil
+                    let config = TorrentHelperConfig.current(from: AppSettings.shared)
                     return RqbitEngine.Options(
-                        uploadLimit: uploadBytes,
-                        peerPort: fixedPort,
-                        enableUPnP: s.torrentEnableUPnP,
-                        enableLSD: s.torrentEnableLSD,
-                        persistDHT: s.torrentPersistDHT
+                        uploadLimit: config.uploadLimitBytesPerSecond,
+                        peerPort: config.listenPort,
+                        enableUPnP: config.enableUPnP,
+                        enableLSD: config.enableLSD,
+                        persistDHT: config.persistDHT
                     )
                 }
             }),
@@ -169,6 +170,7 @@ public final class DownloadManager: ObservableObject {
             // filter this to just maxConcurrentDownloads more precisely.
             Task { @MainActor in
                 self?.startAllWaitingWithinCapacity()
+                await self?.refreshTorrentHelperRestartNeeded()
             }
         }
     }
@@ -503,6 +505,21 @@ public final class DownloadManager: ObservableObject {
         return existingTask(matchingURL: placeholderURL, originalName: "", torrentInfoHash: infoHash)
     }
 
+    /// Compares the currently running torrent helper's launch options against
+    /// `AppSettings` and updates `torrentHelperNeedsRestart`. False when no
+    /// helper process is running.
+    public func refreshTorrentHelperRestartNeeded() async {
+        guard let active = await torrentEngine.activeHelperConfig() else {
+            if torrentHelperNeedsRestart { torrentHelperNeedsRestart = false }
+            return
+        }
+        let desired = TorrentHelperConfig.current(from: settings)
+        let needs = (active != desired)
+        if torrentHelperNeedsRestart != needs {
+            torrentHelperNeedsRestart = needs
+        }
+    }
+
     /// Stops the torrent helper so the next launch picks up updated Settings →
     /// Torrents options (upload limit, listening port, UPnP, LSD, DHT persistence).
     /// Active torrents are paused cleanly before stopping and resumed afterward.
@@ -522,6 +539,7 @@ public final class DownloadManager: ObservableObject {
         }
 
         await torrentEngine.stop()
+        torrentHelperNeedsRestart = false
 
         for task in activeTorrents {
             Task { try? await self.resumeDownload(task) }
@@ -1297,19 +1315,6 @@ public final class DownloadManager: ObservableObject {
     @discardableResult
     private func recreateIncoming(_ conflict: DuplicateDownloadConflict, destination: URL? = nil) async throws -> DownloadTask {
         let dest = destination ?? conflict.incomingDestination
-        if let torrentRequest = conflict.incomingTorrentInfo {
-            let updated = TorrentAddRequest(
-                source: torrentRequest.source,
-                metadata: torrentRequest.metadata,
-                destinationFolder: dest.deletingLastPathComponent(),
-                customName: dest.lastPathComponent,
-                selectedFiles: torrentRequest.selectedFiles,
-                folderIsExplicit: conflict.incomingFolderIsExplicit,
-                startAutomatically: conflict.incomingStartsAutomatically,
-                skipConflictCheck: true
-            )
-            return try await addTorrentDownload(updated)
-        }
         if let info = conflict.incomingYouTubeInfo {
             return try await addYouTubeDownload(
                 pageURL: conflict.incomingURL,
@@ -2039,8 +2044,6 @@ public struct DuplicateDownloadConflict: Identifiable {
     /// request rebuilt as a plain byte-range download would fetch the watch
     /// page's HTML instead of the video.
     public let incomingYouTubeInfo: YouTubeInfo?
-    /// Non-nil when the incoming request is a BitTorrent download.
-    public let incomingTorrentInfo: TorrentAddRequest?
     /// Whether the incoming request's folder was one a person picked. Carried
     /// through so "Save as separate" and "Restart" recreate the download with
     /// the same standing; without it a folder the person chose would quietly
@@ -2063,7 +2066,6 @@ public struct DuplicateDownloadConflict: Identifiable {
         resolvingTaskID: UUID?,
         incomingStreamInfo: StreamInfo? = nil,
         incomingYouTubeInfo: YouTubeInfo? = nil,
-        incomingTorrentInfo: TorrentAddRequest? = nil,
         incomingFolderIsExplicit: Bool = false,
         incomingStartsAutomatically: Bool? = nil
     ) {
@@ -2077,7 +2079,6 @@ public struct DuplicateDownloadConflict: Identifiable {
         self.resolvingTaskID = resolvingTaskID
         self.incomingStreamInfo = incomingStreamInfo
         self.incomingYouTubeInfo = incomingYouTubeInfo
-        self.incomingTorrentInfo = incomingTorrentInfo
         self.incomingFolderIsExplicit = incomingFolderIsExplicit
         self.incomingStartsAutomatically = incomingStartsAutomatically
     }

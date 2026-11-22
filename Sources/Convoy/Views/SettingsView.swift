@@ -260,6 +260,22 @@ struct NumericSettingRow: View {
     let range: ClosedRange<Int>
     var step: Int = 1
     var unit: String? = nil
+    var input: Input = .stepper
+
+    /// How the value is edited.
+    enum Input {
+        /// A value chip beside a stepper. Suits small ranges.
+        case stepper
+        /// A typed field of fixed width, so rows line up whatever they hold.
+        /// Typed values are clamped to `range`, and digits are never grouped,
+        /// so a port reads 6881 rather than 6,881.
+        case field
+    }
+
+    /// `value` held inside `range`.
+    static func clamped(_ value: Int, to range: ClosedRange<Int>) -> Int {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
 
     private var formattedValue: String {
         if let unit { return "\(value) \(unit)" }
@@ -281,6 +297,15 @@ struct NumericSettingRow: View {
 
             Spacer(minLength: 12)
 
+            control
+        }
+        .padding(.vertical, detail == nil ? 2 : 8)
+    }
+
+    @ViewBuilder
+    private var control: some View {
+        switch input {
+        case .stepper:
             HStack(spacing: 8) {
                 Text(formattedValue)
                     .font(.body.monospacedDigit())
@@ -295,8 +320,20 @@ struct NumericSettingRow: View {
                     .labelsHidden()
                     .controlSize(.small)
             }
+        case .field:
+            TextField(
+                title,
+                value: Binding(
+                    get: { value },
+                    set: { value = Self.clamped($0, to: range) }
+                ),
+                format: .number.grouping(.never)
+            )
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
         }
-        .padding(.vertical, detail == nil ? 2 : 8)
     }
 }
 

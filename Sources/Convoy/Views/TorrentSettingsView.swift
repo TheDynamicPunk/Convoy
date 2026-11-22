@@ -9,269 +9,229 @@ import DownloadEngine
 /// and the opt-in default magnet-link handler button.
 struct TorrentSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
+    @ObservedObject private var downloadManager = DownloadManager.shared
     @State private var status: TorrentHelperInstaller.Status?
     @StateObject private var installRun = InstallRun()
     @State private var isDefaultMagnetHandler = false
     @State private var magnetHandlerError: String?
 
-    // Draft state for launch-time helper settings so users can choose between
-    // Save (applies on next Convoy relaunch) and Save & Restart Helper (applies now).
-    @State private var draftUploadLimitKBps = 0
-    @State private var draftListenPort = 0
-    @State private var draftEnableUPnP = false
-    @State private var draftEnableLSD = false
-    @State private var draftPersistDHT = false
-    @State private var hasPendingHelperRestart = false
+    @State private var dismissedRestartBanner = false
     @State private var isRestartingHelper = false
 
-    private var hasUnsavedHelperChanges: Bool {
-        draftUploadLimitKBps != max(0, settings.torrentUploadLimitKBps)
-        || draftListenPort != settings.torrentListenPort
-        || draftEnableUPnP != settings.torrentEnableUPnP
-        || draftEnableLSD != settings.torrentEnableLSD
-        || draftPersistDHT != settings.torrentPersistDHT
+    private var helperConfigSnapshot: TorrentHelperConfig {
+        TorrentHelperConfig.current(from: settings)
+    }
+
+    private var showsRestartBar: Bool {
+        isRestartingHelper || (downloadManager.torrentHelperNeedsRestart && !dismissedRestartBanner)
     }
 
     var body: some View {
-        Form {
-            Section {
-                if let status {
-                    readinessRow(status)
-                    InstallOutput(run: installRun)
-                } else {
-                    ProgressView().controlSize(.small)
-                }
-            } header: {
-                Text("BitTorrent Helper")
-            } footer: {
-                Text("The helper is downloaded from its official release. Newer versions come with Convoy updates.")
-            }
-
-            Section {
-                Picker("After downloading", selection: $settings.seedingPolicyMode) {
-                    Text("Stop when finished").tag(AppSettings.SeedingPolicyMode.stopAtCompletion)
-                    Text("Seed until ratio").tag(AppSettings.SeedingPolicyMode.untilRatio)
-                    Text("Seed for a set time").tag(AppSettings.SeedingPolicyMode.untilDuration)
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    if let status {
+                        readinessRow(status)
+                        InstallOutput(run: installRun)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } header: {
+                    Text("BitTorrent Helper")
+                } footer: {
+                    Text("The helper is downloaded from its official release. Newer versions come with Convoy updates.")
                 }
 
-                if settings.seedingPolicyMode == .untilRatio {
-                    LabeledContent("Target ratio") {
-                        HStack(spacing: 8) {
-                            Text(ByteFormat.ratio(max(0.25, settings.torrentSeedRatioLimit)))
-                                .font(.body.monospacedDigit())
-                                .frame(minWidth: 44)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 4)
-                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                Section {
+                    Picker("After downloading", selection: $settings.seedingPolicyMode) {
+                        Text("Stop when finished").tag(AppSettings.SeedingPolicyMode.stopAtCompletion)
+                        Text("Seed until ratio").tag(AppSettings.SeedingPolicyMode.untilRatio)
+                        Text("Seed for a set time").tag(AppSettings.SeedingPolicyMode.untilDuration)
+                    }
 
-                            Stepper(
-                                "Target ratio",
-                                value: Binding(
-                                    get: { max(0.25, settings.torrentSeedRatioLimit) },
-                                    set: { settings.torrentSeedRatioLimit = max(0.25, ($0 * 4).rounded() / 4) }
-                                ),
-                                in: 0.25...10.0,
-                                step: 0.25
-                            )
-                            .labelsHidden()
-                            .controlSize(.small)
+                    if settings.seedingPolicyMode == .untilRatio {
+                        LabeledContent("Target ratio") {
+                            HStack(spacing: 8) {
+                                Text(ByteFormat.ratio(max(0.25, settings.torrentSeedRatioLimit)))
+                                    .font(.body.monospacedDigit())
+                                    .frame(minWidth: 44)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 4)
+                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+
+                                Stepper(
+                                    "Target ratio",
+                                    value: Binding(
+                                        get: { max(0.25, settings.torrentSeedRatioLimit) },
+                                        set: { settings.torrentSeedRatioLimit = max(0.25, ($0 * 4).rounded() / 4) }
+                                    ),
+                                    in: 0.25...10.0,
+                                    step: 0.25
+                                )
+                                .labelsHidden()
+                                .controlSize(.small)
+                            }
+                        }
+                    } else if settings.seedingPolicyMode == .untilDuration {
+                        NumericSettingRow(
+                            title: "Seed duration",
+                            value: Binding(
+                                get: { max(15, settings.torrentSeedDurationMinutes) },
+                                set: { settings.torrentSeedDurationMinutes = max(15, $0) }
+                            ),
+                            range: 15...1440,
+                            step: 15,
+                            unit: "min"
+                        )
+                    }
+
+                    NumericSettingRow(
+                        title: "Upload speed limit (KB/s)",
+                        detail: "Max \(TorrentHelperConfig.maxUploadLimitKBps.formatted()) KB/s. Set 0 for unlimited.",
+                        value: $settings.torrentUploadLimitKBps,
+                        range: 0...TorrentHelperConfig.maxUploadLimitKBps,
+                        input: .field
+                    )
+                } header: {
+                    Text("Seeding")
+                } footer: {
+                    Text("Torrents upload to other peers while downloading regardless of this setting. Seeding policy changes apply immediately; upload limit changes apply after restarting the BitTorrent helper or relaunching Convoy.")
+                }
+
+                Section {
+                    NumericSettingRow(
+                        title: "Listening port",
+                        detail: "Choose a port from 1024 to 65535. Set 0 to let Convoy handle it automatically.",
+                        value: Binding(
+                            get: { settings.torrentListenPort },
+                            set: { newValue in
+                                if newValue <= 0 {
+                                    settings.torrentListenPort = 0
+                                } else {
+                                    settings.torrentListenPort = NumericSettingRow.clamped(
+                                        newValue,
+                                        to: TorrentHelperConfig.listenPortRange
+                                    )
+                                }
+                            }
+                        ),
+                        range: 0...TorrentHelperConfig.listenPortRange.upperBound,
+                        input: .field
+                    )
+
+                    Toggle("UPnP port forwarding", isOn: $settings.torrentEnableUPnP)
+                    Toggle("Local peer discovery", isOn: $settings.torrentEnableLSD)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Toggle("Remember DHT nodes between launches", isOn: $settings.torrentPersistDHT)
+                        Text("Stores routing nodes in ~/Library/Caches/com.rqbit.dht to speed up peer discovery on launch.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } header: {
+                    Text("Network")
+                } footer: {
+                    Text("BitTorrent downloads are visible to other people sharing the same torrent. Network changes apply after restarting the BitTorrent helper or relaunching Convoy.")
+                }
+
+                Section {
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Default handler for magnet links")
+                            if isDefaultMagnetHandler {
+                                Text("Convoy opens magnet links from browsers and other apps.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Set Convoy as the default app when you click a magnet link.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 12)
+                        if isDefaultMagnetHandler {
+                            Label("Default", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.callout)
+                        } else {
+                            Button("Use Convoy for Magnet Links") {
+                                setDefaultMagnetHandler()
+                            }
                         }
                     }
-                } else if settings.seedingPolicyMode == .untilDuration {
-                    NumericSettingRow(
-                        title: "Seed duration",
-                        value: Binding(
-                            get: { max(15, settings.torrentSeedDurationMinutes) },
-                            set: { settings.torrentSeedDurationMinutes = max(15, $0) }
-                        ),
-                        range: 15...1440,
-                        step: 15,
-                        unit: "min"
-                    )
-                }
-
-                LabeledContent("Upload speed limit") {
-                    HStack(spacing: 8) {
-                        TextField(
-                            "Upload speed limit",
-                            value: Binding(
-                                get: { max(0, draftUploadLimitKBps) },
-                                set: { draftUploadLimitKBps = max(0, $0) }
-                            ),
-                            format: .number
-                        )
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-
-                        Text(draftUploadLimitKBps > 0 ? "KB/s" : "KB/s (0 = unlimited)")
+                    if let magnetHandlerError {
+                        Text(magnetHandlerError)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.red)
                     }
+                } header: {
+                    Text("Magnet Links")
                 }
-            } header: {
-                Text("Seeding")
-            } footer: {
-                Text("Torrents upload to other peers while downloading regardless of this setting. Seeding policy changes apply immediately; upload limit changes take effect when you save and restart the helper or relaunch Convoy.")
             }
+            .formStyle(.grouped)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
 
-            Section {
-                LabeledContent("Listening port") {
-                    HStack(spacing: 8) {
-                        TextField(
-                            "Listening port",
-                            value: Binding(
-                                get: { draftListenPort },
-                                set: { newValue in
-                                    if newValue <= 0 {
-                                        draftListenPort = 0
-                                    } else {
-                                        draftListenPort = min(max(newValue, 1024), 65535)
-                                    }
-                                }
-                            ),
-                            format: .number
-                        )
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
+            if showsRestartBar {
+                helperRestartBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .modifier(OutsideClickFocusDismisser())
+        .animation(.easeInOut(duration: 0.2), value: showsRestartBar)
+        .onChange(of: helperConfigSnapshot) { _, _ in
+            dismissedRestartBanner = false
+            Task { await downloadManager.refreshTorrentHelperRestartNeeded() }
+        }
+        .task {
+            dismissedRestartBanner = false
+            status = await TorrentHelperInstaller.shared.currentStatus()
+            refreshDefaultMagnetHandler()
+            await downloadManager.refreshTorrentHelperRestartNeeded()
+        }
+    }
 
-                        Text(draftListenPort == 0 ? "Random (recommended)" : "Fixed port")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+    // MARK: - Pinned helper restart bar
 
-                Toggle("UPnP port forwarding", isOn: $draftEnableUPnP)
-                Toggle("Local peer discovery", isOn: $draftEnableLSD)
-                VStack(alignment: .leading, spacing: 3) {
-                    Toggle("Remember DHT nodes between launches", isOn: $draftPersistDHT)
-                    Text("Stores routing nodes in ~/Library/Caches/com.rqbit.dht to speed up peer discovery on launch.")
+    private var helperRestartBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 10) {
+                if isRestartingHelper {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Restarting BitTorrent helper…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("Restart the helper to apply changes now, or they'll apply on next launch.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if hasUnsavedHelperChanges || hasPendingHelperRestart {
-                    helperApplyRow
-                }
-            } header: {
-                Text("Network")
-            } footer: {
-                Text("BitTorrent downloads are visible to other people sharing the same torrent. Save to apply on next Convoy relaunch, or Save & Restart Helper to apply immediately.")
-            }
-
-            Section {
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Default handler for magnet links")
-                        if isDefaultMagnetHandler {
-                            Text("Convoy opens magnet links from browsers and other apps.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Set Convoy as the default app when you click a magnet link.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                    Spacer(minLength: 8)
+                    Button("Restart Later") {
+                        dismissedRestartBanner = true
                     }
-                    Spacer(minLength: 12)
-                    if isDefaultMagnetHandler {
-                        Label("Default", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.callout)
-                    } else {
-                        Button("Use Convoy for Magnet Links") {
-                            setDefaultMagnetHandler()
-                        }
+                    Button("Restart Helper") {
+                        Task { await restartHelperNow() }
                     }
+                    .buttonStyle(.borderedProminent)
                 }
-                if let magnetHandlerError {
-                    Text(magnetHandlerError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            } header: {
-                Text("Magnet Links")
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(.bar)
         }
-        .formStyle(.grouped)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .onAppear {
-            loadHelperDrafts()
-        }
-        .task {
-            status = await TorrentHelperInstaller.shared.currentStatus()
-            refreshDefaultMagnetHandler()
-        }
-    }
-
-    // MARK: - Helper launch-settings save / restart
-
-    @ViewBuilder
-    private var helperApplyRow: some View {
-        HStack(spacing: 10) {
-            if hasUnsavedHelperChanges {
-                Text("Unsaved helper changes")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button("Save") {
-                    commitHelperDrafts()
-                    hasPendingHelperRestart = true
-                }
-                .disabled(isRestartingHelper)
-                Button("Save & Restart Helper") {
-                    Task { await saveAndRestartHelper() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isRestartingHelper)
-            } else if hasPendingHelperRestart {
-                Text("Saved — will apply on next Convoy relaunch.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button("Restart Helper Now") {
-                    Task { await restartHelperNow() }
-                }
-                .disabled(isRestartingHelper)
-            }
-            if isRestartingHelper {
-                ProgressView()
-                    .controlSize(.small)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func loadHelperDrafts() {
-        draftUploadLimitKBps = max(0, settings.torrentUploadLimitKBps)
-        draftListenPort = settings.torrentListenPort
-        draftEnableUPnP = settings.torrentEnableUPnP
-        draftEnableLSD = settings.torrentEnableLSD
-        draftPersistDHT = settings.torrentPersistDHT
-    }
-
-    private func commitHelperDrafts() {
-        settings.torrentUploadLimitKBps = max(0, draftUploadLimitKBps)
-        settings.torrentListenPort = draftListenPort
-        settings.torrentEnableUPnP = draftEnableUPnP
-        settings.torrentEnableLSD = draftEnableLSD
-        settings.torrentPersistDHT = draftPersistDHT
-    }
-
-    private func saveAndRestartHelper() async {
-        commitHelperDrafts()
-        await restartHelperNow()
     }
 
     private func restartHelperNow() async {
         isRestartingHelper = true
-        await DownloadManager.shared.restartTorrentHelper()
-        hasPendingHelperRestart = false
+        await downloadManager.restartTorrentHelper()
+        dismissedRestartBanner = false
         isRestartingHelper = false
     }
 
@@ -345,5 +305,44 @@ struct TorrentSettingsView: View {
                 refreshDefaultMagnetHandler()
             }
         }
+    }
+}
+
+/// Resigns text-field focus when the user clicks anywhere outside a text input
+/// in the Settings window, so typed values in `NumericSettingRow` commit
+/// immediately instead of staying focused until Return is pressed.
+private struct OutsideClickFocusDismisser: ViewModifier {
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+                    if let window = event.window,
+                       window.firstResponder is NSTextView,
+                       let contentView = window.contentView,
+                       let hit = contentView.hitTest(event.locationInWindow),
+                       !Self.isInsideTextInput(hit) {
+                        window.makeFirstResponder(nil)
+                    }
+                    return event
+                }
+            }
+            .onDisappear {
+                if let monitor {
+                    NSEvent.removeMonitor(monitor)
+                    self.monitor = nil
+                }
+            }
+    }
+
+    private static func isInsideTextInput(_ view: NSView) -> Bool {
+        var current: NSView? = view
+        while let v = current {
+            if v is NSTextField || v is NSTextView { return true }
+            current = v.superview
+        }
+        return false
     }
 }

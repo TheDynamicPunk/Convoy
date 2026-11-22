@@ -147,6 +147,63 @@ extension TorrentEngineError: LocalizedError {
     }
 }
 
+/// Snapshot of the launch-time BitTorrent helper settings that require a
+/// helper restart when changed while `rqbit` is already running.
+public struct TorrentHelperConfig: Equatable, Sendable {
+    /// Ports accepted for peer connections. Below 1024 needs privileges.
+    public static let listenPortRange: ClosedRange<Int> = 1024...65535
+
+    /// The highest upload limit, in KB/s. rqbit takes the limit as a non-zero
+    /// 32-bit count of bytes per second (9.1.0 refuses 4294967296 with "number
+    /// too large"), so a higher limit would stop the helper from starting.
+    public static let maxUploadLimitKBps = Int(UInt32.max) / 1024
+
+    /// The limit as bytes per second for rqbit, or nil for none (0 or below),
+    /// held to what rqbit accepts.
+    public static func uploadBytesPerSecond(forKBps kbps: Int) -> Int? {
+        kbps > 0 ? min(kbps, maxUploadLimitKBps) * 1024 : nil
+    }
+
+    /// The stored port as a fixed one, or nil to let the helper take a free
+    /// port each time it starts (0, or anything outside `listenPortRange`).
+    public static func fixedPort(from stored: Int) -> UInt16? {
+        listenPortRange.contains(stored) ? UInt16(stored) : nil
+    }
+
+    public var uploadLimitBytesPerSecond: Int?
+    public var listenPort: UInt16?
+    public var enableUPnP: Bool
+    public var enableLSD: Bool
+    public var persistDHT: Bool
+
+    public init(
+        uploadLimitBytesPerSecond: Int? = nil,
+        listenPort: UInt16? = nil,
+        enableUPnP: Bool = false,
+        enableLSD: Bool = false,
+        persistDHT: Bool = false
+    ) {
+        self.uploadLimitBytesPerSecond = uploadLimitBytesPerSecond
+        self.listenPort = listenPort
+        self.enableUPnP = enableUPnP
+        self.enableLSD = enableLSD
+        self.persistDHT = persistDHT
+    }
+
+    @MainActor
+    public static func current(from settings: AppSettings) -> TorrentHelperConfig {
+        let uploadBytes = uploadBytesPerSecond(forKBps: settings.torrentUploadLimitKBps)
+        let fixedPort = fixedPort(from: settings.torrentListenPort)
+        return TorrentHelperConfig(
+            uploadLimitBytesPerSecond: uploadBytes,
+            listenPort: fixedPort,
+            enableUPnP: settings.torrentEnableUPnP,
+            enableLSD: settings.torrentEnableLSD,
+            persistDHT: settings.torrentPersistDHT
+        )
+    }
+}
+
 /// The torrent engine as the rest of the app sees it.
 ///
 /// Torrents are named by their info hash, not by any id the engine assigns,
@@ -186,12 +243,17 @@ protocol TorrentEngine: Sendable {
     /// Optional MSB-first bitfield of completed pieces for the progress bar.
     func pieceBitfield(of torrent: TorrentInfoHash) async -> Data?
 
+    /// The launch-time config of the currently running helper, or `nil` when
+    /// no helper process is running.
+    func activeHelperConfig() async -> TorrentHelperConfig?
+
     /// Stops any underlying helper process so the next call starts a fresh one.
     func stop() async
 }
 
 extension TorrentEngine {
     func pieceBitfield(of torrent: TorrentInfoHash) async -> Data? { nil }
+    func activeHelperConfig() async -> TorrentHelperConfig? { nil }
     func stop() async {}
 
     /// A snapshot now and then every `interval`, until the torrent is removed

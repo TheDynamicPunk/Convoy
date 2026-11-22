@@ -140,7 +140,9 @@ public final class AppSettings: ObservableObject {
     @AppStorage(Key.torrentSeedDurationMinutes.rawValue) public var torrentSeedDurationMinutes: Int = 60
     /// Upload speed limit in KB/s (0 = unlimited). Applied on helper launch.
     @AppStorage(Key.torrentUploadLimitKBps.rawValue) public var torrentUploadLimitKBps: Int = 0
-    /// Peer listening port (0 = random free port on each launch).
+    /// Peer listening port: `0` (default) picks a random free port each time
+    /// the helper launches; a value in `TorrentHelperConfig.listenPortRange`
+    /// pins that fixed port for router or VPN port forwarding.
     @AppStorage(Key.torrentListenPort.rawValue) public var torrentListenPort: Int = 0
     @AppStorage(Key.torrentEnableUPnP.rawValue) public var torrentEnableUPnP: Bool = false
     @AppStorage(Key.torrentEnableLSD.rawValue) public var torrentEnableLSD: Bool = false
