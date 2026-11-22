@@ -439,6 +439,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .concurrencyLimitReached)) { _ in
             showToast("Limit reached (\(downloadManager.maxConcurrentDownloads) at a time) — raise it in Settings → Downloads.")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .torrentAlreadyAdded)) { note in
+            let name = (note.object as? DownloadTask)?.filename ?? "This torrent"
+            showToast("\"\(name)\" is already in your downloads.")
+        }
         .overlay(alignment: .bottomTrailing) {
             BottomBannerStack(toastMessage: toastMessage, onDismissToast: dismissToast)
                 .padding(.bottom, 16)

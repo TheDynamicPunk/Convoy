@@ -21,11 +21,16 @@ programs, so the areas that matter most are:
 
 - The app ↔ browser connection (the native messaging host and its local socket).
 - The updater: Sparkle's signed updates and the appcast.
-- Verification and installation of the YouTube helpers.
+- Verification and installation of the helpers (the YouTube tools and the
+  BitTorrent client).
+- The BitTorrent helper's control connection. rqbit listens for Convoy on the
+  loopback address only, on a random port, and requires a random password made
+  for each launch. It also accepts incoming peer connections from the internet
+  on a separate port.
 - Anything that makes Convoy write, run or send something the user didn't ask for.
 
-Problems in the sites Convoy downloads from, or in yt-dlp and the other helpers
-themselves, belong with those projects.
+Problems in the sites Convoy downloads from, or in yt-dlp, rqbit and the other
+helpers themselves, belong with those projects.
 
 ## Supported versions
 

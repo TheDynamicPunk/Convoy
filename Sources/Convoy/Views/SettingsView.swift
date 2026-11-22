@@ -26,6 +26,10 @@ struct SettingsView: View {
                 .tabItem { Label("YouTube", systemImage: "play.rectangle.fill") }
                 .tag(SettingsSection.youtube)
 
+            TorrentSettingsView()
+                .tabItem { Label("Torrents", systemImage: TorrentStyle.symbol) }
+                .tag(SettingsSection.torrents)
+
             AdvancedSettingsView()
                 .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver.fill") }
                 .tag(SettingsSection.advanced)
@@ -56,6 +60,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case downloads
     case browser
     case youtube
+    case torrents
     case advanced
 
     var id: String { rawValue }
@@ -248,41 +253,50 @@ private struct DownloadLocationSection: View {
     }
 }
 
-private struct NumericSettingRow: View {
+struct NumericSettingRow: View {
     let title: String
-    let detail: String
+    var detail: String? = nil
     @Binding var value: Int
     let range: ClosedRange<Int>
+    var step: Int = 1
+    var unit: String? = nil
+
+    private var formattedValue: String {
+        if let unit { return "\(value) \(unit)" }
+        return "\(value)"
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 18) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.body)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 12)
 
             HStack(spacing: 8) {
-                Text("\(value)")
+                Text(formattedValue)
                     .font(.body.monospacedDigit())
-                    .frame(minWidth: 34)
+                    .frame(minWidth: unit == nil ? 34 : 56)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 5)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                     .accessibilityLabel(title)
-                    .accessibilityValue("\(value)")
+                    .accessibilityValue(formattedValue)
 
-                Stepper("Adjust \(title)", value: $value, in: range)
+                Stepper("Adjust \(title)", value: $value, in: range, step: step)
                     .labelsHidden()
                     .controlSize(.small)
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, detail == nil ? 2 : 8)
     }
 }
 

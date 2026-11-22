@@ -48,6 +48,9 @@ public struct TorrentFile: Equatable, Sendable {
     public let name: String
     public let files: [Entry]
     public let totalSize: Int64
+    /// Number of SHA-1 pieces in `info.pieces`, used to trim trailing padding bits
+    /// from the engine's byte-aligned `/haves` bitfield.
+    public let pieceCount: Int
     /// `announce` and `announce-list` merged, each address once.
     public let trackers: [String]
     public let isMultiFile: Bool
@@ -123,6 +126,7 @@ public struct TorrentFile: Equatable, Sendable {
         self.name = name
         self.files = entries
         self.totalSize = total
+        self.pieceCount = pieces.count / 20
         self.trackers = TorrentTrackers.cleaned(announced)
         self.isMultiFile = multiFile
         self.isPrivate = info["private"]?.integer == 1

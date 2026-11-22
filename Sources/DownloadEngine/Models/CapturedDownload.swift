@@ -30,17 +30,25 @@ public struct CapturedDownload: Identifiable {
     public let segmentCount: Int?
     /// Non-nil for an HLS/DASH capture, which goes through the stream engine.
     public let stream: DuplicateDownloadConflict.StreamInfo?
+    /// Non-nil for a BitTorrent capture (magnet link or `.torrent` file).
+    public let torrent: TorrentSource?
+    /// Pre-selected destination folder when handed off from Add Downloads.
+    public let initialFolder: URL?
+
+    public var isTorrent: Bool { torrent != nil }
 
     public init(
         url: URL,
-        headers: [String: String],
-        matchHeaders: [String: String],
-        referrerURL: URL?,
-        suggestedFilename: String?,
-        filenameSource: FilenameSource?,
-        expectedSize: Int64?,
-        segmentCount: Int?,
-        stream: DuplicateDownloadConflict.StreamInfo?
+        headers: [String: String] = [:],
+        matchHeaders: [String: String] = [:],
+        referrerURL: URL? = nil,
+        suggestedFilename: String? = nil,
+        filenameSource: FilenameSource? = nil,
+        expectedSize: Int64? = nil,
+        segmentCount: Int? = nil,
+        stream: DuplicateDownloadConflict.StreamInfo? = nil,
+        torrent: TorrentSource? = nil,
+        initialFolder: URL? = nil
     ) {
         self.url = url
         self.headers = headers
@@ -51,6 +59,8 @@ public struct CapturedDownload: Identifiable {
         self.expectedSize = expectedSize
         self.segmentCount = segmentCount
         self.stream = stream
+        self.torrent = torrent
+        self.initialFolder = initialFolder
     }
 
     /// A name to show for it before the engine has resolved a real one.
@@ -75,11 +85,19 @@ public struct CaptureChoices {
     /// Start now (true) or add without starting (false). Nil leaves it to the
     /// "Start downloads automatically" setting.
     public var startsAutomatically: Bool?
+    /// File indexes selected for a torrent download; nil downloads all files.
+    public var selectedTorrentFiles: Set<Int>?
 
-    public init(filename: String? = nil, folder: URL? = nil, startsAutomatically: Bool? = nil) {
+    public init(
+        filename: String? = nil,
+        folder: URL? = nil,
+        startsAutomatically: Bool? = nil,
+        selectedTorrentFiles: Set<Int>? = nil
+    ) {
         self.filename = filename
         self.folder = folder
         self.startsAutomatically = startsAutomatically
+        self.selectedTorrentFiles = selectedTorrentFiles
     }
 }
 
@@ -123,7 +141,16 @@ extension DownloadManager {
             source = nil
         }
 
-        if let stream = capture.stream {
+        if let torrentSource = capture.torrent {
+            let request = TorrentAddRequest(
+                source: torrentSource,
+                destinationFolder: baseFolder,
+                customName: choices.filename,
+                selectedFiles: choices.selectedTorrentFiles,
+                startAutomatically: choices.startsAutomatically
+            )
+            _ = try? await addTorrentDownload(request)
+        } else if let stream = capture.stream {
             _ = try? await addStreamDownload(
                 url: capture.url,
                 streamType: stream.streamType,

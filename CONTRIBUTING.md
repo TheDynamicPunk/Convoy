@@ -97,10 +97,10 @@ reporting 14 renders the whole app in the pre-26 design.
 
 ## House rules
 
-- **Don't bundle the helper binaries.** yt-dlp, the JavaScript runtime and the
-  bot-check helper are downloaded at runtime and verified against a checksum
-  list. Shipping them inside the app would change the project's licensing and
-  legal position.
+- **Don't bundle the helper binaries.** yt-dlp, the JavaScript runtime, the
+  bot-check helper and the BitTorrent client (rqbit) are downloaded at runtime
+  and verified against a checksum list. Shipping them inside the app would
+  change the project's licensing and legal position.
 - **The browser extension is one codebase.** `Extensions/Chromium/` holds the
   shared code and the Chromium manifest. The Firefox build is that same code
   with `Extensions/Firefox/` laid over it by `Extensions/build-firefox.sh`;

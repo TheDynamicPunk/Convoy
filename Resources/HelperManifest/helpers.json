@@ -1,6 +1,6 @@
 {
   "formatVersion" : 1,
-  "generated" : "2026-09-15T17:51:26Z",
+  "generated" : "2026-11-21T09:54:01Z",
   "helpers" : {
     "bgutil-pot" : {
       "artifacts" : {
@@ -37,6 +37,15 @@
       },
       "version" : "v0.16.2"
     },
+    "rqbit" : {
+      "artifacts" : {
+        "universal" : {
+          "sha256" : "de978a3ddd9732181745a76d054faccd4df3e3caaae98e487292fea6637f1f73",
+          "url" : "https:\/\/github.com\/ikatson\/rqbit\/releases\/download\/v9.1.0\/rqbit-osx-universal"
+        }
+      },
+      "version" : "v9.1.0"
+    },
     "yt-dlp" : {
       "artifacts" : {
         "universal" : {
@@ -47,5 +56,5 @@
       "version" : "2026.08.19"
     }
   },
-  "sequence" : 4
+  "sequence" : 5
 }

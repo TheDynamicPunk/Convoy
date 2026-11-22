@@ -37,6 +37,11 @@ actor RqbitEngine: TorrentEngine {
         /// that can change while it runs.
         var uploadLimit: Int?
         var downloadLimit: Int?
+        /// Fixed peer listening port (`1024...65535`), or nil for a random free port.
+        var peerPort: UInt16?
+        var enableUPnP: Bool
+        var enableLSD: Bool
+        var persistDHT: Bool
         /// Added before the subcommand. A seam for tests, which switch off
         /// the network parts of the helper.
         var extraArguments: [String]
@@ -49,6 +54,10 @@ actor RqbitEngine: TorrentEngine {
             defaultOutputFolder: URL = HelperLocations.torrentsDirectory.appendingPathComponent("incoming", isDirectory: true),
             uploadLimit: Int? = nil,
             downloadLimit: Int? = nil,
+            peerPort: UInt16? = nil,
+            enableUPnP: Bool = false,
+            enableLSD: Bool = false,
+            persistDHT: Bool = false,
             extraArguments: [String] = [],
             startTimeout: TimeInterval = 20
         ) {
@@ -57,6 +66,10 @@ actor RqbitEngine: TorrentEngine {
             self.defaultOutputFolder = defaultOutputFolder
             self.uploadLimit = uploadLimit
             self.downloadLimit = downloadLimit
+            self.peerPort = peerPort
+            self.enableUPnP = enableUPnP
+            self.enableLSD = enableLSD
+            self.persistDHT = persistDHT
             self.extraArguments = extraArguments
             self.startTimeout = startTimeout
         }
@@ -77,6 +90,7 @@ actor RqbitEngine: TorrentEngine {
     }
 
     private let options: Options
+    private let optionsProvider: (@Sendable () async -> Options)?
     private let supervisor: ProcessSupervisor
     private let clientConfiguration: URLSessionConfiguration
 
@@ -91,10 +105,12 @@ actor RqbitEngine: TorrentEngine {
 
     init(
         options: Options = Options(),
+        optionsProvider: (@Sendable () async -> Options)? = nil,
         supervisor: ProcessSupervisor = .shared,
         clientConfiguration: URLSessionConfiguration = .cookieless
     ) {
         self.options = options
+        self.optionsProvider = optionsProvider
         self.supervisor = supervisor
         self.clientConfiguration = clientConfiguration
     }
@@ -108,18 +124,20 @@ actor RqbitEngine: TorrentEngine {
         defaultOutputFolder: URL,
         uploadLimit: Int?,
         downloadLimit: Int?,
+        enableUPnP: Bool = false,
+        enableLSD: Bool = false,
+        persistDHT: Bool = false,
         extra: [String]
     ) -> [String] {
         var arguments = [
             "--http-api-listen-addr", "127.0.0.1:\(apiPort)",
             "--listen-port", "\(peerPort)",
-            // Phase 0 found these on by default: the DHT table written under
-            // ~/Library/Caches, a UPnP port-forward attempt at start, and
-            // local-network discovery. Convoy wants none of them.
-            "--disable-dht-persistence",
-            "--disable-upnp-port-forward",
-            "--disable-lsd",
         ]
+        // Phase 0 found these on by default in rqbit; Convoy keeps them off
+        // unless explicitly opted in from Settings → Torrents.
+        if !persistDHT { arguments.append("--disable-dht-persistence") }
+        if !enableUPnP { arguments.append("--disable-upnp-port-forward") }
+        if !enableLSD { arguments.append("--disable-lsd") }
         if let uploadLimit { arguments += ["--ratelimit-upload", "\(uploadLimit)"] }
         if let downloadLimit { arguments += ["--ratelimit-download", "\(downloadLimit)"] }
         arguments += extra
@@ -183,6 +201,10 @@ actor RqbitEngine: TorrentEngine {
                 // removal happened.
             }
         }
+    }
+
+    func pieceBitfield(of torrent: TorrentInfoHash) async -> Data? {
+        try? await call { await $0.pieceBitfield(of: torrent) }
     }
 
     // MARK: - Calls
@@ -294,34 +316,49 @@ actor RqbitEngine: TorrentEngine {
     }
 
     private func launchOnce() async throws -> Running {
+        let activeOptions = await optionsProvider?() ?? options
         let apiPort: UInt16
         let peerPort: UInt16
         let secret: String
         do {
-            apiPort = try LoopbackHelper.freePort()
-            var candidate = try LoopbackHelper.freePort()
-            var tries = 0
-            while candidate == apiPort && tries < 10 {
-                candidate = try LoopbackHelper.freePort()
-                tries += 1
+            var chosenAPI = try LoopbackHelper.freePort()
+            if let fixedPeer = activeOptions.peerPort, fixedPeer >= 1024 {
+                var tries = 0
+                while chosenAPI == fixedPeer && tries < 10 {
+                    chosenAPI = try LoopbackHelper.freePort()
+                    tries += 1
+                }
+                guard chosenAPI != fixedPeer else { throw LoopbackHelper.Failure.noFreePort }
+                peerPort = fixedPeer
+            } else {
+                var candidate = try LoopbackHelper.freePort()
+                var tries = 0
+                while candidate == chosenAPI && tries < 10 {
+                    candidate = try LoopbackHelper.freePort()
+                    tries += 1
+                }
+                guard candidate != chosenAPI else { throw LoopbackHelper.Failure.noFreePort }
+                peerPort = candidate
             }
-            guard candidate != apiPort else { throw LoopbackHelper.Failure.noFreePort }
-            peerPort = candidate
+            apiPort = chosenAPI
             secret = try LoopbackHelper.randomSecret()
-            try FileManager.default.createDirectory(at: options.sessionDirectory, withIntermediateDirectories: true)
-            try FileManager.default.createDirectory(at: options.defaultOutputFolder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: activeOptions.sessionDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: activeOptions.defaultOutputFolder, withIntermediateDirectories: true)
         } catch {
             throw TorrentEngineError.helperFailedToStart("it could not be prepared to start: \(error.localizedDescription)")
         }
 
         let spec = ManagedProcessSpec(
-            executable: options.executable,
+            executable: activeOptions.executable,
             arguments: Self.launchArguments(
                 apiPort: apiPort, peerPort: peerPort,
-                sessionDirectory: options.sessionDirectory,
-                defaultOutputFolder: options.defaultOutputFolder,
-                uploadLimit: options.uploadLimit, downloadLimit: options.downloadLimit,
-                extra: options.extraArguments),
+                sessionDirectory: activeOptions.sessionDirectory,
+                defaultOutputFolder: activeOptions.defaultOutputFolder,
+                uploadLimit: activeOptions.uploadLimit, downloadLimit: activeOptions.downloadLimit,
+                enableUPnP: activeOptions.enableUPnP,
+                enableLSD: activeOptions.enableLSD,
+                persistDHT: activeOptions.persistDHT,
+                extra: activeOptions.extraArguments),
             // The secret travels in the environment, as rqbit requires; the
             // control port itself is loopback-only.
             environment: ["RQBIT_HTTP_BASIC_AUTH_USERPASS": "\(RqbitClient.user):\(secret)"],
@@ -345,7 +382,7 @@ actor RqbitEngine: TorrentEngine {
         let client = RqbitClient(
             baseURL: URL(string: "http://127.0.0.1:\(apiPort)")!, secret: secret, configuration: clientConfiguration)
         do {
-            try await waitUntilAnswering(client, process: process)
+            try await waitUntilAnswering(client, process: process, timeout: activeOptions.startTimeout)
             // stop() may have cancelled this after the helper answered and
             // before this resumed. Nothing suspends between this check and
             // the caller recording the helper, so a stop cannot slip in after.
@@ -359,8 +396,8 @@ actor RqbitEngine: TorrentEngine {
         }
     }
 
-    private func waitUntilAnswering(_ client: RqbitClient, process: ManagedProcess) async throws {
-        let deadline = Date().addingTimeInterval(options.startTimeout)
+    private func waitUntilAnswering(_ client: RqbitClient, process: ManagedProcess, timeout: TimeInterval) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
         while true {
             if !process.isRunning {
                 // Let its last words arrive before reading them.
@@ -383,7 +420,7 @@ actor RqbitEngine: TorrentEngine {
             }
             if Date() >= deadline {
                 throw TorrentEngineError.helperFailedToStart(
-                    "it did not answer within \(Int(options.startTimeout)) seconds")
+                    "it did not answer within \(Int(timeout)) seconds")
             }
             try await Task.sleep(for: .milliseconds(100))
         }

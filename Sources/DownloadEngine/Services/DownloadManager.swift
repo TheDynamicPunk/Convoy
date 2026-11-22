@@ -43,6 +43,10 @@ public final class DownloadManager: ObservableObject {
     private let torrentAvailableSpaceProvider: ((URL) -> Int64?)?
     private let torrentPollInterval: Duration
     private let torrentSeedingPolicyProvider: (@MainActor () -> SeedingPolicy)?
+    /// Completed torrents that were seeding when the app last quit. Kept so
+    /// they can be removed from rqbit's persisted session the next time the
+    /// engine starts instead of silently seeding in the background.
+    private var staleSeedingHashes: Set<TorrentInfoHash> = []
     
     /// The conflict currently shown in the sheet. Nil when no conflict is
     /// pending. Managed exclusively by enqueueConflict / resolveConflict.
@@ -85,7 +89,20 @@ public final class DownloadManager: ObservableObject {
 
     private convenience init() {
         self.init(
-            torrentEngine: RqbitEngine(),
+            torrentEngine: RqbitEngine(optionsProvider: {
+                await MainActor.run {
+                    let s = AppSettings.shared
+                    let uploadBytes = s.torrentUploadLimitKBps > 0 ? s.torrentUploadLimitKBps * 1024 : nil
+                    let fixedPort: UInt16? = (1024...65535).contains(s.torrentListenPort) ? UInt16(s.torrentListenPort) : nil
+                    return RqbitEngine.Options(
+                        uploadLimit: uploadBytes,
+                        peerPort: fixedPort,
+                        enableUPnP: s.torrentEnableUPnP,
+                        enableLSD: s.torrentEnableLSD,
+                        persistDHT: s.torrentPersistDHT
+                    )
+                }
+            }),
             persistenceURL: Self.defaultPersistenceURL,
             torrentsDirectory: HelperLocations.torrentsDirectory,
             maxConcurrentOverride: nil,
@@ -475,7 +492,53 @@ public final class DownloadManager: ObservableObject {
     /// Resolves a magnet link's metadata via the torrent engine (used by the
     /// capture dialog to display the file list before starting).
     public func probeMagnet(_ magnet: String) async throws -> TorrentFile {
-        try await torrentEngine.probe(magnet: magnet)
+        await cleanUpStaleSeedingTorrents()
+        return try await torrentEngine.probe(magnet: magnet)
+    }
+
+    /// Returns an existing torrent task matching `infoHash`, if one is already
+    /// in the list (excluding completed torrents whose folder was moved/deleted).
+    public func existingTorrent(infoHash: TorrentInfoHash) -> DownloadTask? {
+        let placeholderURL = URL(string: "magnet:?xt=urn:btih:\(infoHash.hex)")!
+        return existingTask(matchingURL: placeholderURL, originalName: "", torrentInfoHash: infoHash)
+    }
+
+    /// Stops the torrent helper so the next launch picks up updated Settings →
+    /// Torrents options (upload limit, listening port, UPnP, LSD, DHT persistence).
+    /// Active torrents are paused cleanly before stopping and resumed afterward.
+    public func restartTorrentHelper() async {
+        let activeTorrents = tasks.filter { task in
+            task.isTorrent && (
+                task.status == .downloading || task.status == .starting || task.status == .validating
+            )
+        }
+        let seedingTorrents = completedTasks.filter { $0.isTorrent && $0.isSeeding }
+
+        for task in activeTorrents {
+            await pauseDownload(task)
+        }
+        for task in seedingTorrents {
+            await task.stopSeeding()
+        }
+
+        await torrentEngine.stop()
+
+        for task in activeTorrents {
+            Task { try? await self.resumeDownload(task) }
+        }
+    }
+
+    /// Removes completed torrents that were seeding before the last app quit
+    /// from the engine's persisted session (keeping downloaded files on disk)
+    /// so they never silently seed in the background after relaunch.
+    private func cleanUpStaleSeedingTorrents() async {
+        guard !staleSeedingHashes.isEmpty else { return }
+        let hashes = staleSeedingHashes
+        staleSeedingHashes.removeAll()
+        for hash in hashes {
+            try? await torrentEngine.remove(hash, deleteData: false)
+        }
+        savePersistedTasks()
     }
 
     /// Adds a BitTorrent download from a magnet link or `.torrent` file.
@@ -540,20 +603,7 @@ public final class DownloadManager: ObservableObject {
                originalName: originalName,
                torrentInfoHash: infoHash
            ) {
-            let altName = deduplicatedDestination(for: existing.destinationURL, isDirectory: true).lastPathComponent
-            enqueueConflict(DuplicateDownloadConflict(
-                incomingURL: taskURL,
-                incomingHeaders: [:],
-                incomingReferrer: nil,
-                incomingDestination: candidateFolder,
-                incomingFilenameSource: nameAndSource.source,
-                existingTask: existing,
-                suggestedAlternativeName: altName,
-                resolvingTaskID: nil,
-                incomingTorrentInfo: request,
-                incomingFolderIsExplicit: request.folderIsExplicit,
-                incomingStartsAutomatically: request.startAutomatically
-            ))
+            NotificationCenter.default.post(name: .torrentAlreadyAdded, object: existing)
             throw DownloadConflictError()
         }
 
@@ -588,7 +638,8 @@ public final class DownloadManager: ObservableObject {
             TorrentDetails.File(
                 path: entry.path,
                 length: entry.length,
-                isIncluded: request.selectedFiles?.contains(index) ?? true
+                isIncluded: request.selectedFiles?.contains(index) ?? true,
+                isPadding: entry.isPadding
             )
         } ?? []
 
@@ -599,7 +650,8 @@ public final class DownloadManager: ObservableObject {
             storedTorrentPath: storedPath,
             selectedFiles: request.selectedFiles,
             wholeTorrentSize: resolvedMetadata?.totalSize,
-            hasClaimedFolder: false
+            hasClaimedFolder: false,
+            pieceCount: resolvedMetadata?.pieceCount
         )
         configureTorrentTask(task, torrent: torrentKind, initialFiles: initialFiles)
         task.markDestinationMissingIfNeeded()
@@ -617,7 +669,9 @@ public final class DownloadManager: ObservableObject {
     private func configureTorrentTask(
         _ task: DownloadTask,
         torrent: DownloadKind.Torrent,
-        initialFiles: [TorrentDetails.File] = []
+        initialFiles: [TorrentDetails.File] = [],
+        initialUploadedBytes: Int64 = 0,
+        initialPieceBitfield: Data? = nil
     ) {
         task.configureTorrentDownload(
             torrent,
@@ -637,8 +691,25 @@ public final class DownloadManager: ObservableObject {
                     .appendingPathComponent(safeName, isDirectory: true)
                 return self.deduplicatedDestination(for: candidate, isDirectory: true, excluding: resolvingTask.id)
             },
-            initialFiles: initialFiles
+            initialFiles: initialFiles,
+            initialUploadedBytes: initialUploadedBytes,
+            initialPieceBitfield: initialPieceBitfield
         )
+    }
+
+    private func restoredTorrentMetadata(for taskID: UUID, torrent: DownloadKind.Torrent) -> (files: [TorrentDetails.File], pieceCount: Int?) {
+        let data = torrent.storedTorrentPath.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+            ?? TorrentStorage.loadTorrentData(for: taskID, base: torrentsDirectory)
+        guard let data, let parsed = try? TorrentFile(data) else { return ([], torrent.pieceCount) }
+        let files = parsed.files.enumerated().map { index, entry in
+            TorrentDetails.File(
+                path: entry.path,
+                length: entry.length,
+                isIncluded: torrent.selectedFiles?.contains(index) ?? true,
+                isPadding: entry.isPadding
+            )
+        }
+        return (files, torrent.pieceCount ?? parsed.pieceCount)
     }
 
     public func startDownload(_ task: DownloadTask) async throws {
@@ -655,6 +726,9 @@ public final class DownloadManager: ObservableObject {
         activeCount += 1
         
         do {
+            if task.isTorrent {
+                await cleanUpStaleSeedingTorrents()
+            }
             try await task.start()
 
             // Some start conditions are reported through task status rather
@@ -685,6 +759,7 @@ public final class DownloadManager: ObservableObject {
     public func pauseDownload(_ task: DownloadTask) async {
         await task.pause()
         releaseActiveSlot(for: task)
+        savePersistedTasks()
         startNextQueued()
     }
     
@@ -705,6 +780,9 @@ public final class DownloadManager: ObservableObject {
         activeCount += 1
 
         do {
+            if task.isTorrent {
+                await cleanUpStaleSeedingTorrents()
+            }
             try await task.resume()
             // Same reasoning as startDownload's post-start release — see the
             // comment there. resume() delegates to start(), which can land
@@ -953,7 +1031,7 @@ public final class DownloadManager: ObservableObject {
         // auto-start the moment a slot happened to free, quietly ignoring
         // "Pause All". DownloadTask.pause() now accepts .waiting as a valid
         // source state for exactly this.
-        for task in tasks where task.status == .waiting || task.status == .downloading || task.status == .starting {
+        for task in tasks where task.status == .waiting || task.status == .downloading || task.status == .starting || task.status == .validating {
             await task.pause()
         }
     }
@@ -1487,8 +1565,16 @@ public final class DownloadManager: ObservableObject {
                         completedSegments: snap.streamCompletedSegments,
                         totalSegments: snap.streamTotalSegments
                     )
-                case .torrent(let torrent):
-                    configureTorrentTask(task, torrent: torrent)
+                case .torrent(var torrent):
+                    let restored = restoredTorrentMetadata(for: snap.id, torrent: torrent)
+                    torrent.pieceCount = restored.pieceCount
+                    configureTorrentTask(
+                        task,
+                        torrent: torrent,
+                        initialFiles: restored.files,
+                        initialUploadedBytes: snap.torrent?.uploadedBytes ?? 0,
+                        initialPieceBitfield: snap.torrent?.pieceBitfield
+                    )
                 case .direct:
                     break
                 }
@@ -1509,8 +1595,19 @@ public final class DownloadManager: ObservableObject {
                     categoryID: snap.categoryID,
                     createdAt: snap.createdAt ?? Date()
                 )
-                if case .torrent(let torrent) = snap.downloadKind {
-                    configureTorrentTask(task, torrent: torrent)
+                if case .torrent(var torrent) = snap.downloadKind {
+                    let restored = restoredTorrentMetadata(for: snap.id, torrent: torrent)
+                    torrent.pieceCount = restored.pieceCount
+                    if snap.torrent?.wasSeeding == true {
+                        staleSeedingHashes.insert(torrent.infoHash)
+                    }
+                    configureTorrentTask(
+                        task,
+                        torrent: torrent,
+                        initialFiles: restored.files,
+                        initialUploadedBytes: snap.torrent?.uploadedBytes ?? 0,
+                        initialPieceBitfield: nil
+                    )
                 }
                 completedTasks.append(task)
             case .urlExpired:
@@ -1621,7 +1718,12 @@ public final class DownloadManager: ObservableObject {
                 youTube = nil; stream = s; torrent = nil
             case .torrent(let t):
                 youTube = nil; stream = nil
-                torrent = PersistedDownloadTask.PersistedTorrent(from: t, wasSeeding: task.isSeeding)
+                torrent = PersistedDownloadTask.PersistedTorrent(
+                    from: t,
+                    wasSeeding: task.isSeeding,
+                    uploadedBytes: task.uploadedBytes,
+                    pieceBitfield: task.lastTorrentBitfield
+                )
             }
             return PersistedDownloadTask(
                 id: task.id, url: task.url, destinationPath: task.destinationURL.path,
@@ -1651,7 +1753,14 @@ public final class DownloadManager: ObservableObject {
         let completed = completedTasks.map { task -> PersistedDownloadTask in
             let torrent: PersistedDownloadTask.PersistedTorrent?
             if case .torrent(let t) = task.kind {
-                torrent = PersistedDownloadTask.PersistedTorrent(from: t, wasSeeding: task.isSeeding)
+                // Completed torrents don't need their all-ones bitfield serialized;
+                // pieceCount reconstructs the completed piece grid on relaunch.
+                torrent = PersistedDownloadTask.PersistedTorrent(
+                    from: t,
+                    wasSeeding: task.isSeeding,
+                    uploadedBytes: task.uploadedBytes,
+                    pieceBitfield: nil
+                )
             } else {
                 torrent = nil
             }
@@ -1784,8 +1893,16 @@ struct PersistedDownloadTask: Codable {
         let wholeTorrentSize: Int64?
         let hasClaimedFolder: Bool
         let wasSeeding: Bool?
+        var uploadedBytes: Int64? = nil
+        var pieceBitfield: Data? = nil
+        var pieceCount: Int? = nil
 
-        init(from torrent: DownloadKind.Torrent, wasSeeding: Bool) {
+        init(
+            from torrent: DownloadKind.Torrent,
+            wasSeeding: Bool,
+            uploadedBytes: Int64 = 0,
+            pieceBitfield: Data? = nil
+        ) {
             self.infoHashHex = torrent.infoHash.hex
             self.infoHashV2 = torrent.infoHashV2
             self.magnetURI = torrent.magnetURI
@@ -1794,6 +1911,9 @@ struct PersistedDownloadTask: Codable {
             self.wholeTorrentSize = torrent.wholeTorrentSize
             self.hasClaimedFolder = torrent.hasClaimedFolder
             self.wasSeeding = wasSeeding ? true : nil
+            self.uploadedBytes = uploadedBytes > 0 ? uploadedBytes : nil
+            self.pieceBitfield = pieceBitfield
+            self.pieceCount = torrent.pieceCount
         }
     }
 
@@ -1809,7 +1929,8 @@ struct PersistedDownloadTask: Codable {
                 storedTorrentPath: torrent.storedTorrentPath,
                 selectedFiles: torrent.selectedFiles.map(Set.init),
                 wholeTorrentSize: torrent.wholeTorrentSize,
-                hasClaimedFolder: torrent.hasClaimedFolder
+                hasClaimedFolder: torrent.hasClaimedFolder,
+                pieceCount: torrent.pieceCount
             ))
         }
         if let selector = ytFormatSelector, let page = ytPageURL {
@@ -2027,6 +2148,9 @@ public struct DownloadConflictError: Error {}
 public extension Notification.Name {
     static let downloadCompleted = Notification.Name("downloadCompleted")
     static let concurrencyLimitReached = Notification.Name("concurrencyLimitReached")
+    /// Posted when the user tries to add a torrent whose info hash is already
+    /// in the download list. Carries the existing `DownloadTask` as `object`.
+    static let torrentAlreadyAdded = Notification.Name("torrentAlreadyAdded")
     /// Posted whenever pendingConflict becomes a new (different) conflict —
     /// see its doc comment above. The app layer uses this to bring the
     /// window forward for the duplicate-conflict sheet, unconditionally.

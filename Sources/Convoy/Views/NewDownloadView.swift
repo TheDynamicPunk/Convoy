@@ -17,11 +17,6 @@ private struct ContentHeightKey: PreferenceKey {
     }
 }
 
-private enum FolderChoice: Hashable {
-    case automatic
-    case folder(URL)
-    case other
-}
 
 /// The last few folders downloads were saved to, newest first. Kept in
 /// UserDefaults like the other settings; folders that no longer exist drop
@@ -51,8 +46,7 @@ struct AddDownloadsView: View {
     
     @State private var inputText = ""
     @State private var destination: URL?
-    @State private var isChoosingFolder = false
-    @State private var recentFolders = RecentDownloadFolders.load()
+    @State private var showingFolderPicker = false
     @FocusState private var isURLFieldFocused: Bool
     @State private var segmentCount = 8
     @State private var isLoading = false
@@ -163,6 +157,14 @@ struct AddDownloadsView: View {
             }
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: isSingleYouTubeURL)
+        .fileImporter(isPresented: $showingFolderPicker, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result {
+                destination = url
+            }
+        }
+        .onDrop(of: Self.torrentDropTypes, isTargeted: nil) { providers in
+            handleDroppedTorrentFiles(providers)
+        }
         .onAppear {
             logger.info("AddDownloadsView appeared, initialURL=\(self.initialURL ?? "nil")")
             if let initialURL, !initialURL.isEmpty, inputText != initialURL {
@@ -637,12 +639,6 @@ struct AddDownloadsView: View {
         return Label(title + sizeSuffix, systemImage: icon)
     }
     
-    /// The folder from Settings, which is where the download manager saves
-    /// when nothing is chosen here.
-    private var defaultFolder: URL {
-        URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
-    }
-
     /// Everything the current YouTube choice implies, worked out in ONE place
     /// and read by both the "Automatic" folder preview and the real add. That
     /// is the point of it: the preview names a folder from the filename, and
@@ -696,17 +692,11 @@ struct AddDownloadsView: View {
             hosts: CategoryRouter.hosts(from: [validURLs.first]),
             folderIsExplicit: false
         )
-        return (route?.category.folder ?? defaultFolder).standardizedFileURL
-    }
-
-    private var automaticPickerTitle: String {
-        guard let folder = automaticPreviewFolder else { return "Automatic" }
-        let name = FileManager.default.displayName(atPath: folder.path)
-        return "Automatic (\(name))"
+        return (route?.category.folder ?? SaveFolderPicker.defaultFolder(for: settings)).standardizedFileURL
     }
 
     private var resolvedDestination: URL {
-        (destination ?? automaticPreviewFolder ?? defaultFolder).standardizedFileURL
+        (destination ?? automaticPreviewFolder ?? SaveFolderPicker.defaultFolder(for: settings)).standardizedFileURL
     }
     private var destinationPath: String {
         resolvedDestination.path(percentEncoded: false)
@@ -737,92 +727,20 @@ struct AddDownloadsView: View {
             }
             .animation(.easeOut(duration: 0.15), value: segmentCount)
         }
-        .fileImporter(isPresented: $isChoosingFolder, allowedContentTypes: [.folder]) { result in
-            guard case .success(let folder) = result else { return }
-            destination = folder
-        }
     }
 
-    /// Safari's and the Screenshot tool's pattern: Automatic first, so
-    /// categories can route the file unless the person explicitly chooses a
-    /// folder, then the usual folders, the last few used, and Other….
-    /// "Automatic" is only offered while sorting is in effect; with it off
-    /// there is nothing to be automatic about, and it would just be a second
-    /// name for the default folder.
+    /// Native menu-style folder picker. Uses `.fileImporter` for "Other…" so
+    /// the folder browser slides out as a sheet attached to this window.
     private var folderPicker: some View {
-        Picker("Save to", selection: Binding<FolderChoice>(
-            get: {
-                if let destination {
-                    return .folder(destination.standardizedFileURL)
-                }
-                // Nothing chosen: "Automatic" while sorting is in effect,
-                // otherwise the default folder, exactly as before categories.
-                return downloadManager.sortingIsActive
-                    ? .automatic
-                    : .folder(defaultFolder.standardizedFileURL)
-            },
-            set: { choice in
-                switch choice {
-                case .automatic:
-                    destination = nil
-                case .folder(let folder):
-                    destination = folder
-                case .other:
-                    // After the menu's fade-out: opened any sooner, the
-                    // picker froze the half-faded menu on screen behind it.
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(100))
-                        isChoosingFolder = true
-                    }
-                }
-            }
-        )) {
-            if downloadManager.sortingIsActive {
-                Label(automaticPickerTitle, systemImage: "folder.badge.gearshape")
-                    .tag(FolderChoice.automatic)
-                Divider()
-            }
-            ForEach(standardFolders, id: \.self) { folderRow($0) }
-            let recent = recentFolderChoices
-            if !recent.isEmpty {
-                Divider()
-                Text("Recent").disabled(true)
-                ForEach(recent, id: \.self) { folderRow($0) }
-            }
-            Divider()
-            Text("Other…").tag(FolderChoice.other)
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
+        SaveFolderPicker(
+            folder: $destination,
+            automaticTitle: SaveFolderPicker.automaticTitle(for: automaticPreviewFolder),
+            allowsAutomatic: true,
+            activatesAppForOpenPanel: false,
+            onChooseOther: { showingFolderPicker = true }
+        )
         .fixedSize()
         .help(destinationPath)
-    }
-
-    private func folderRow(_ folder: URL) -> some View {
-        Label(FileManager.default.displayName(atPath: folder.path), systemImage: "folder")
-            .tag(FolderChoice.folder(folder))
-    }
-
-    /// The Settings default, then Downloads and Desktop when they differ.
-    private var standardFolders: [URL] {
-        let fm = FileManager.default
-        let candidates = [defaultFolder]
-            + fm.urls(for: .downloadsDirectory, in: .userDomainMask)
-            + fm.urls(for: .desktopDirectory, in: .userDomainMask)
-        return candidates.map(\.standardizedFileURL).reduce(into: []) { result, folder in
-            if !result.contains(folder) { result.append(folder) }
-        }
-    }
-
-    /// Recently used folders, plus the one just picked through Other… so
-    /// the menu can show it as selected.
-    private var recentFolderChoices: [URL] {
-        let standard = standardFolders
-        var folders = recentFolders
-        if let destination, !folders.contains(destination.standardizedFileURL) {
-            folders.insert(destination.standardizedFileURL, at: 0)
-        }
-        return folders.filter { !standard.contains($0) }
     }
 
     private var segmentsRow: some View {
@@ -883,18 +801,24 @@ struct AddDownloadsView: View {
         }
     }
     
-    private func parseInputText(_ text: String) {
-        let lines = text.split(whereSeparator: \.isNewline)
-        let parsed = lines.compactMap { line -> URL? in
+    /// Extracts valid HTTP/HTTPS/FTP URLs and valid BitTorrent magnet URIs
+    /// from newline-separated user input.
+    static func parseInputURLs(from text: String) -> [URL] {
+        text.split(whereSeparator: \.isNewline).compactMap { line -> URL? in
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  let url = URL(string: trimmed),
-                  let scheme = url.scheme?.lowercased(),
-                  ["http", "https", "ftp"].contains(scheme),
-                  url.host != nil else { return nil }
+            guard !trimmed.isEmpty, let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else {
+                return nil
+            }
+            if scheme == "magnet" {
+                return (try? MagnetURI(trimmed)) != nil ? url : nil
+            }
+            guard ["http", "https", "ftp"].contains(scheme), url.host != nil else { return nil }
             return url
         }
-        
+    }
+
+    private func parseInputText(_ text: String) {
+        let parsed = Self.parseInputURLs(from: text)
         validURLs = parsed
         errorMessage = ""
         
@@ -979,7 +903,7 @@ struct AddDownloadsView: View {
         errorMessage = ""
         
         let segments = segmentCount
-        if let destination, !standardFolders.contains(destination.standardizedFileURL) {
+        if let destination, !SaveFolderPicker.standardFolders(for: settings).contains(destination.standardizedFileURL) {
             RecentDownloadFolders.record(destination)
         }
         
@@ -994,7 +918,7 @@ struct AddDownloadsView: View {
                     let needsMerge = selection.needsMerge
                     let language = selection.language
                     let filename = selection.filename
-                    let dest = (destination ?? URL(fileURLWithPath: AppSettings.shared.downloadDirectory))
+                    let dest = (destination ?? SaveFolderPicker.defaultFolder(for: settings))
                         .appendingPathComponent(filename)
                     // Only a folder the person picked counts as theirs. Falling back
                     // to the default folder above is not a choice, so a download
@@ -1024,7 +948,12 @@ struct AddDownloadsView: View {
                         )
                     }
                 } else {
+                    var magnetLinks: [String] = []
                     for url in validURLs {
+                        if url.scheme?.lowercased() == "magnet" {
+                            magnetLinks.append(url.absoluteString)
+                            continue
+                        }
                         let dest = destination?.appendingPathComponent(url.lastPathComponent)
                         let folderIsExplicit = destination != nil
                         // Per URL, so one duplicate in a pasted batch queues
@@ -1040,6 +969,12 @@ struct AddDownloadsView: View {
                             )
                         }
                     }
+                    let chosenFolder = destination
+                    await MainActor.run {
+                        for magnet in magnetLinks {
+                            CaptureCoordinator.shared.handleTorrent(magnet: magnet, initialFolder: chosenFolder)
+                        }
+                    }
                 }
                 await MainActor.run { dismiss() }
             } catch {
@@ -1049,6 +984,38 @@ struct AddDownloadsView: View {
                 }
             }
         }
+    }
+
+    private static let torrentDropTypes: [UTType] = {
+        if let torrent = UTType(filenameExtension: "torrent") {
+            return [torrent]
+        }
+        return [.fileURL]
+    }()
+
+    private func handleDroppedTorrentFiles(_ providers: [NSItemProvider]) -> Bool {
+        let chosenFolder = destination
+        var accepted = false
+        for provider in providers {
+            guard let matchType = Self.torrentDropTypes.first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) else {
+                continue
+            }
+            accepted = true
+            provider.loadFileRepresentation(forTypeIdentifier: matchType.identifier) { url, _ in
+                guard let url, url.pathExtension.lowercased() == "torrent" else { return }
+                // Copy bytes before `loadFileRepresentation`'s temporary URL is removed.
+                guard let data = try? Data(contentsOf: url) else { return }
+                let tempCopy = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
+                try? data.write(to: tempCopy)
+                Task { @MainActor in
+                    CaptureCoordinator.shared.handleTorrentFile(at: tempCopy, initialFolder: chosenFolder)
+                    try? FileManager.default.removeItem(at: tempCopy)
+                    dismiss()
+                }
+            }
+        }
+        return accepted
     }
 }
 

@@ -59,7 +59,67 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
         }
     }
 
+    /// Opens a magnet link in the capture dialog so the user can pick files
+    /// and destination before starting.
+    func handleTorrent(magnet: String, initialFolder: URL? = nil) {
+        let trimmed = magnet.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed) else {
+            captureLogger.warning("rejected unparseable magnet URL")
+            return
+        }
+        guard let parsed = try? MagnetURI(trimmed) else {
+            captureLogger.warning("rejected invalid magnet URI")
+            return
+        }
+        if let existing = DownloadManager.shared.existingTorrent(infoHash: parsed.infoHash) {
+            NotificationCenter.default.post(name: .torrentAlreadyAdded, object: existing)
+            return
+        }
+        let provisionalName = parsed.displayName ?? "Torrent \(parsed.infoHash.hex.prefix(8))"
+        let capture = CapturedDownload(
+            url: url,
+            suggestedFilename: provisionalName,
+            filenameSource: parsed.displayName != nil ? .torrentName : .originalURL,
+            torrent: .magnet(trimmed),
+            initialFolder: initialFolder
+        )
+        enqueue(capture)
+    }
+
+    /// Opens a local `.torrent` file in the capture dialog.
+    func handleTorrentFile(at fileURL: URL, initialFolder: URL? = nil) {
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
+            captureLogger.error("failed to read .torrent file at \(fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        let parsed = try? TorrentFile(data)
+        if let parsed, let existing = DownloadManager.shared.existingTorrent(infoHash: parsed.infoHash) {
+            NotificationCenter.default.post(name: .torrentAlreadyAdded, object: existing)
+            return
+        }
+        let name = parsed?.name ?? fileURL.deletingPathExtension().lastPathComponent
+        let capture = CapturedDownload(
+            url: fileURL,
+            suggestedFilename: name,
+            filenameSource: .torrentName,
+            expectedSize: parsed?.totalSize,
+            torrent: .torrentFile(data),
+            initialFolder: initialFolder
+        )
+        enqueue(capture)
+    }
+
     private func route(_ capture: CapturedDownload, confirming: Bool) async {
+        // Torrents always open in the capture dialog (file picker + disk-space
+        // note) and never enter the HTTP re-link path.
+        if capture.isTorrent {
+            enqueue(capture)
+            return
+        }
+
         // A re-link in progress (the person tapped Re-link and is capturing
         // the download again) takes the capture before anything else: it is
         // checked against the expired download rather than added or confirmed.

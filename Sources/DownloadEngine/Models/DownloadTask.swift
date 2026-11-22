@@ -139,6 +139,10 @@ public final class DownloadTask: ObservableObject, Identifiable {
     @Published public private(set) var connectedSeeds: Int = 0
     @Published public private(set) var torrentFiles: [TorrentDetails.File] = []
     @Published public private(set) var torrentFileProgress: [Int64] = []
+    /// Live piece states decoded from the engine's `/haves` bitfield.
+    @Published public private(set) var torrentPieces: [SegmentMap.PieceState] = []
+    /// Raw `/haves` bitfield retained so `downloads.json` can restore the piece map on relaunch.
+    internal private(set) var lastTorrentBitfield: Data?
 
     public var isTorrent: Bool {
         if case .torrent = kind { return true }
@@ -237,6 +241,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
     }
     /// Each stream track's pieces, as last reported by `StreamDownloader`.
     private var _streamPieces: [[SegmentMap.PieceState]] = []
+
     private var _segmentMapRefreshedAt = Date.distantPast
     private var _segmentMapRefreshScheduled = false
     /// Bytes arrive per network chunk; the bar redraws at most this often.
@@ -946,7 +951,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
         seedingPolicyProvider: (@MainActor () -> SeedingPolicy)? = nil,
         availableSpaceProvider: ((URL) -> Int64?)? = nil,
         onMetadataResolved: (@MainActor (DownloadTask, String) -> URL)? = nil,
-        initialFiles: [TorrentDetails.File] = []
+        initialFiles: [TorrentDetails.File] = [],
+        initialUploadedBytes: Int64 = 0,
+        initialPieceBitfield: Data? = nil
     ) {
         self.kind = .torrent(torrent)
         self._torrentEngine = engine
@@ -959,6 +966,15 @@ public final class DownloadTask: ObservableObject, Identifiable {
         self._onTorrentMetadataResolved = onMetadataResolved
         if !initialFiles.isEmpty {
             self.torrentFiles = initialFiles
+        }
+        if initialUploadedBytes > 0 {
+            self.uploadedBytes = initialUploadedBytes
+        }
+        if let initialPieceBitfield, !initialPieceBitfield.isEmpty {
+            self.lastTorrentBitfield = initialPieceBitfield
+            self.torrentPieces = SegmentMap.torrentPieces(from: initialPieceBitfield, pieceCount: torrent.pieceCount)
+        } else if status == .completed, let count = torrent.pieceCount, count > 0 {
+            self.torrentPieces = [SegmentMap.PieceState](repeating: .done, count: count)
         }
     }
 
@@ -1000,7 +1016,13 @@ public final class DownloadTask: ObservableObject, Identifiable {
             throw TorrentEngineError.helperMissing(path: HelperLocations.rqbit)
         }
 
-        _torrentActivityNote = nil
+        let isResuming = self.downloadedBytes > 0 || initialTorrent.hasClaimedFolder
+        if isResuming {
+            self._torrentActivityNote = "Checking files…"
+            self.status = .validating
+        } else {
+            self._torrentActivityNote = nil
+        }
         _smoothedDownSpeed = 0
         _smoothedUpSpeed = 0
 
@@ -1022,7 +1044,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
             }
 
             try Task.checkCancellation()
-            guard self.status == .starting else { return }
+            guard self.status == .starting || self.status == .validating else { return }
 
             if !attached {
                 // 2. Load stored `.torrent` bytes, or probe the magnet if metadata
@@ -1034,18 +1056,20 @@ public final class DownloadTask: ObservableObject, Identifiable {
                     self._torrentActivityNote = "Getting torrent details…"
                     let resolved = try await engine.probe(magnet: magnetURI)
                     try Task.checkCancellation()
-                    guard self.status == .starting else { return }
+                    guard self.status == .starting || self.status == .validating else { return }
 
                     let savedURL = try? TorrentStorage.saveTorrentData(resolved.source, for: self.id, base: self._torrentsDirectory)
                     torrentData = resolved.source
                     torrent.storedTorrentPath = savedURL?.path ?? torrent.storedTorrentPath
                     torrent.wholeTorrentSize = resolved.totalSize
+                    torrent.pieceCount = resolved.pieceCount
                     self.kind = .torrent(torrent)
                     self.torrentFiles = resolved.files.enumerated().map { index, entry in
                         TorrentDetails.File(
                             path: entry.path,
                             length: entry.length,
-                            isIncluded: torrent.selectedFiles?.contains(index) ?? true
+                            isIncluded: torrent.selectedFiles?.contains(index) ?? true,
+                            isPadding: entry.isPadding
                         )
                     }
                     if let selected = torrent.selectedFiles {
@@ -1109,7 +1133,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
 
                 let details = try await engine.add(source, into: self.destinationURL, files: torrent.selectedFiles)
                 try Task.checkCancellation()
-                guard self.status == .starting else {
+                guard self.status == .starting || self.status == .validating else {
                     try? await engine.pause(torrent.infoHash)
                     return
                 }
@@ -1117,24 +1141,51 @@ public final class DownloadTask: ObservableObject, Identifiable {
             }
 
             // 6. Stream snapshots until complete, paused, or errored.
+            // Stay in `.validating` ("Checking") or `.starting` until the engine
+            // actually reports `.downloading`.
             self._startTime = self._startTime ?? Date()
-            self.status = .downloading
+            var pausedResumes = 0
 
             for try await snapshot in engine.updates(of: torrent.infoHash, every: self._torrentPollInterval) {
                 try Task.checkCancellation()
-                guard self.status == .downloading || self.status == .starting else { return }
+                guard self.status == .downloading || self.status == .starting || self.status == .validating else { return }
 
                 self.applyTorrentSnapshot(snapshot)
 
                 switch snapshot.state {
                 case .initializing:
-                    self._torrentActivityNote = self.downloadedBytes > 0 ? "Checking files…" : "Finding peers…"
+                    pausedResumes = 0
+                    if isResuming || self.downloadedBytes > 0 {
+                        self._torrentActivityNote = "Checking files…"
+                        self.status = .validating
+                    } else {
+                        self._torrentActivityNote = "Finding peers…"
+                        self.status = .starting
+                    }
                 case .downloading:
+                    pausedResumes = 0
                     self._torrentActivityNote = snapshot.connectedPeers == 0 ? "Finding peers…" : nil
+                    if self.status != .downloading {
+                        self.status = .downloading
+                    }
                 case .paused:
+                    // After a relaunch, rqbit can finish its initial hash check
+                    // and land in `paused` if `resume` arrived while it was still
+                    // initializing. Re-issue `resume` so the download starts on
+                    // its own instead of sitting idle until toggled manually.
+                    if pausedResumes < 5 {
+                        pausedResumes += 1
+                        self._torrentActivityNote = isResuming ? "Checking files…" : "Starting…"
+                        if self.status == .downloading {
+                            self.status = isResuming ? .validating : .starting
+                        }
+                        try? await engine.resume(torrent.infoHash)
+                        continue
+                    }
                     self.speed = 0
                     self.uploadSpeed = 0
                     self._torrentActivityNote = nil
+                    self.status = .paused
                     return
                 case .error(let message):
                     self.speed = 0
@@ -1192,6 +1243,11 @@ public final class DownloadTask: ObservableObject, Identifiable {
         connectedPeers = snapshot.connectedPeers
         connectedSeeds = snapshot.connectedSeeds
         torrentFileProgress = snapshot.fileProgress
+        if let bitfield = snapshot.pieceBitfield, !bitfield.isEmpty, bitfield != lastTorrentBitfield {
+            lastTorrentBitfield = bitfield
+            let pieceCount: Int? = if case .torrent(let t) = kind { t.pieceCount } else { nil }
+            torrentPieces = SegmentMap.torrentPieces(from: bitfield, pieceCount: pieceCount)
+        }
 
         // Exponential smoothing so speeds and ETA do not jitter wildly.
         let alpha = 0.3
@@ -1221,8 +1277,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
                     self.applyTorrentSnapshot(snapshot)
                     self.speed = 0
 
+                    let currentPolicy = self._torrentSeedingPolicyProvider()
                     let reachedLimit: Bool
-                    switch policy {
+                    switch currentPolicy {
                     case .stopAtCompletion:
                         reachedLimit = true
                     case .untilRatio(let target):
@@ -1830,14 +1887,14 @@ public final class DownloadTask: ObservableObject, Identifiable {
             return
         }
         if case .torrent = kind,
-           status == .starting || status == .downloading || status == .paused,
+           status == .starting || status == .validating || status == .downloading || status == .paused,
            let note = _torrentActivityNote {
             activityMessage = note
             return
         }
         switch status {
         case .validating:
-            activityMessage = "Checking for updates…"
+            activityMessage = isTorrent ? "Checking files…" : "Checking for updates…"
         case .refreshingLink:
             activityMessage = "Getting fresh link…"
         case .awaitingDuplicateResolution:
@@ -2353,7 +2410,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
     /// time, before any resolver or network activity is attempted.
     @discardableResult
     func markDestinationMissingIfNeeded() -> Bool {
-        guard status == .waiting || status == .paused || status == .starting else {
+        guard status == .waiting || status == .paused || status == .starting || status == .validating else {
             return false
         }
 
@@ -2631,6 +2688,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         case .stream:
             return .pieces(_streamPieces)
         case .torrent:
+            // Torrents use a solid progress bar in the row and show the 2D piece
+            // map in the expandable drawer, so building a 1D SegmentMap is unused.
             return nil
         case .direct, .youTube:
             return .lanes(_segments.map { ($0.startByte...$0.endByte, $0.bytesOnDisk) }, totalBytes: totalBytes)

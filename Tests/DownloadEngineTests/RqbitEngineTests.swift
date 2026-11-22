@@ -87,6 +87,23 @@ final class RqbitEngineTests: XCTestCase {
         XCTAssertTrue(extra! < subcommand!)
     }
 
+    func testNetworkTogglesOmitDisableFlagsWhenEnabled() {
+        let arguments = RqbitEngine.launchArguments(
+            apiPort: 41001, peerPort: 51413,
+            sessionDirectory: URL(fileURLWithPath: "/s"),
+            defaultOutputFolder: URL(fileURLWithPath: "/o"),
+            uploadLimit: 256 * 1024, downloadLimit: nil,
+            enableUPnP: true, enableLSD: true, persistDHT: true,
+            extra: []
+        )
+
+        XCTAssertEqual(arguments.firstIndex(of: "--listen-port").map { arguments[$0 + 1] }, "51413")
+        XCTAssertEqual(arguments.firstIndex(of: "--ratelimit-upload").map { arguments[$0 + 1] }, "\(256 * 1024)")
+        XCTAssertFalse(arguments.contains("--disable-upnp-port-forward"))
+        XCTAssertFalse(arguments.contains("--disable-lsd"))
+        XCTAssertFalse(arguments.contains("--disable-dht-persistence"))
+    }
+
     // MARK: - Launch failures
 
     func testAMissingExecutableIsReportedAsNotInstalled() async {

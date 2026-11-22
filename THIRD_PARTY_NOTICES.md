@@ -155,13 +155,22 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ## Downloaded at runtime (not included in the app)
 
-When you ask for YouTube support in Settings → YouTube, Convoy downloads the
-helper programs below onto your Mac. They are separate works under their own
-licences, which are published with each project, and are not distributed with
-Convoy. Each download is checked against a SHA-256 hash recorded in the app
-before it is used.
+When you ask for YouTube support in Settings → YouTube, or BitTorrent support
+in Settings → Torrents, Convoy downloads the helper programs below onto your
+Mac. They are separate works under their own licences, which are published
+with each project, and are not distributed with Convoy. Each download is
+checked against a SHA-256 hash recorded in the app before it is used.
+
+For YouTube:
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [QuickJS (quickjs-ng)](https://github.com/quickjs-ng/quickjs), a JavaScript runtime
 - [bgutil-ytdlp-pot-provider-rs](https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs),
   the bot-check provider (`bgutil-pot` and its yt-dlp plugin)
+
+For BitTorrent:
+
+- [rqbit](https://github.com/ikatson/rqbit), a BitTorrent client, licensed
+  under the [Apache License 2.0](https://github.com/ikatson/rqbit/blob/v9.1.0/LICENSE).
+  Convoy runs it as a separate program and talks to it over a local
+  connection; it is not linked into Convoy.

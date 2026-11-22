@@ -71,6 +71,9 @@ public enum DownloadKind: Equatable, Sendable {
         public var wholeTorrentSize: Int64?
         /// Whether this task has already claimed its destination folder via `mkdir`.
         public var hasClaimedFolder: Bool
+        /// Total piece count from `info.pieces`, used to trim trailing padding bits
+        /// from the byte-aligned `/haves` bitfield. Nil until metadata resolves.
+        public var pieceCount: Int?
 
         public init(
             infoHash: TorrentInfoHash,
@@ -79,7 +82,8 @@ public enum DownloadKind: Equatable, Sendable {
             storedTorrentPath: String? = nil,
             selectedFiles: Set<Int>? = nil,
             wholeTorrentSize: Int64? = nil,
-            hasClaimedFolder: Bool = false
+            hasClaimedFolder: Bool = false,
+            pieceCount: Int? = nil
         ) {
             self.infoHash = infoHash
             self.infoHashV2 = infoHashV2
@@ -88,6 +92,7 @@ public enum DownloadKind: Equatable, Sendable {
             self.selectedFiles = selectedFiles
             self.wholeTorrentSize = wholeTorrentSize
             self.hasClaimedFolder = hasClaimedFolder
+            self.pieceCount = pieceCount
         }
     }
 

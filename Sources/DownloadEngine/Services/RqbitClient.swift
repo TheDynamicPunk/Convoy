@@ -127,6 +127,13 @@ struct RqbitClient: TorrentEngine {
         _ = try await send(try request("POST", "/torrents/\(torrent.hex)/\(action)", body: Data()))
     }
 
+    func pieceBitfield(of torrent: TorrentInfoHash) async -> Data? {
+        guard let req = try? request("GET", "/torrents/\(torrent.hex)/haves", accept: "application/octet-stream") else {
+            return nil
+        }
+        return try? await send(req)
+    }
+
     // MARK: - Requests
 
     private func request(
@@ -135,6 +142,7 @@ struct RqbitClient: TorrentEngine {
         query: [(String, String)] = [],
         body: Data? = nil,
         contentType: String? = nil,
+        accept: String? = nil,
         timeout: TimeInterval = 15
     ) throws -> URLRequest {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
@@ -154,6 +162,7 @@ struct RqbitClient: TorrentEngine {
         request.timeoutInterval = timeout
         request.setValue(authorization, forHTTPHeaderField: "Authorization")
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        if let accept { request.setValue(accept, forHTTPHeaderField: "Accept") }
         return request
     }
 

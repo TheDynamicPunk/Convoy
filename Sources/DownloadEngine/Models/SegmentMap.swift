@@ -92,4 +92,21 @@ public struct SegmentMap: Sendable, Equatable {
         }
         return SegmentMap(layout: .pieces, spans: spans)
     }
+
+    /// Decodes a BitTorrent MSB-first bitfield (BEP 3 / rqbit `/haves`) into
+    /// piece states for `SegmentMap.pieces`.
+    static func torrentPieces(from bitfield: Data, pieceCount: Int? = nil) -> [PieceState] {
+        let maxPieces = bitfield.count * 8
+        let count = min(pieceCount ?? maxPieces, maxPieces)
+        guard count > 0 else { return [] }
+        var pieces = [PieceState](repeating: .pending, count: count)
+        for index in 0..<count {
+            let byte = bitfield[bitfield.startIndex + (index >> 3)]
+            let mask: UInt8 = 0x80 >> (index & 7)
+            if (byte & mask) != 0 {
+                pieces[index] = .done
+            }
+        }
+        return pieces
+    }
 }

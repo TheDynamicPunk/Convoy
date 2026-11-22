@@ -49,7 +49,8 @@
          subprocesses; see the signing section of build.sh). verify-bundle.sh
          fails the build if any of them come back. -->
 
-    <!-- URL Scheme for deep linking / menu bar window opening -->
+    <!-- URL Schemes: convoy:// for deep linking / menu bar window opening,
+         magnet: for opt-in BitTorrent magnet links (never claimed silently). -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -60,6 +61,37 @@
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>convoy</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLName</key>
+            <string>Magnet Link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>magnet</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Document types: .torrent files -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>BitTorrent Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>torrent</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.bittorrent.torrent</string>
             </array>
         </dict>
     </array>

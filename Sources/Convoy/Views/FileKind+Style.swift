@@ -33,3 +33,11 @@ extension FileKind {
         }
     }
 }
+
+/// Shared visual identity for BitTorrent rows, dialogs and the Settings tab.
+/// A plain SF Symbol (connected peers) so it scales, tints and adapts like
+/// every other icon in the app. Magnet links and `.torrent` files share it.
+enum TorrentStyle {
+    static let symbol = "point.3.filled.connected.trianglepath.dotted"
+    static let tint: Color = .indigo
+}

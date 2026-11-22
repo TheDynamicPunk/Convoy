@@ -439,11 +439,21 @@ final class TorrentTaskTests: XCTestCase {
         let engine = FakeTorrentEngine()
         let manager = makeManager(engine: engine)
 
-        _ = try await manager.addTorrentDownload(TorrentAddRequest(
+        let first = try await manager.addTorrentDownload(TorrentAddRequest(
             source: .torrentFile(TorrentFixtures.dataA),
             destinationFolder: downloadsDir,
             startAutomatically: false
         ))
+
+        var notifiedTask: DownloadTask?
+        let observer = NotificationCenter.default.addObserver(
+            forName: .torrentAlreadyAdded,
+            object: nil,
+            queue: nil
+        ) { note in
+            notifiedTask = note.object as? DownloadTask
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
 
         let magnet = "magnet:?xt=urn:btih:\(TorrentFixtures.hashA)&dn=different-name"
         do {
@@ -454,8 +464,8 @@ final class TorrentTaskTests: XCTestCase {
             ))
             XCTFail("Expected DownloadConflictError for matching info hash")
         } catch is DownloadConflictError {
-            XCTAssertNotNil(manager.pendingConflict)
-            XCTAssertEqual(manager.pendingConflict?.existingTask.torrentInfoHash?.hex, TorrentFixtures.hashA)
+            XCTAssertNil(manager.pendingConflict, "Duplicate torrents should notify via toast rather than opening a conflict sheet")
+            XCTAssertEqual(notifiedTask?.id, first.id)
         }
     }
 
@@ -581,5 +591,113 @@ final class TorrentTaskTests: XCTestCase {
         let magnetURL = URL(string: "magnet:?xt=urn:btih:\(TorrentFixtures.hashA)")!
         let info = await LinkInfoProbe.fetch(url: magnetURL, headers: [:])
         XCTAssertNil(info)
+    }
+
+    func testResumeShowsCheckingWhileInitializingAndDownloadingOnceLive() async throws {
+        let engine = FakeTorrentEngine()
+        let torrentB = try TorrentFile(TorrentFixtures.dataB)
+        let manager = makeManager(engine: engine)
+
+        let task = try await manager.addTorrentDownload(TorrentAddRequest(
+            source: .torrentFile(TorrentFixtures.dataB),
+            destinationFolder: downloadsDir,
+            startAutomatically: false
+        ))
+
+        let run1 = Task { try? await manager.resumeDownload(task) }
+        let started = await waitUntil { task.status == .downloading }
+        XCTAssertTrue(started)
+
+        await manager.pauseDownload(task)
+        await run1.value
+        XCTAssertEqual(task.status, .paused)
+
+        // Simulate rqbit hash-checking existing pieces on resume.
+        engine.simulate(torrentB.infoHash) { snap in
+            snap.state = .initializing
+            snap.downloadedBytes = 2
+        }
+
+        let run2 = Task { try? await manager.resumeDownload(task) }
+        let checking = await waitUntil { task.status == .validating && task.activityMessage == "Checking files…" }
+        XCTAssertTrue(checking)
+
+        // Transition to downloading only once the engine reports live downloading.
+        engine.simulate(torrentB.infoHash) { snap in
+            snap.state = .downloading
+            snap.downloadedBytes = 4
+            snap.connectedPeers = 2
+        }
+
+        let downloading = await waitUntil { task.status == .downloading }
+        XCTAssertTrue(downloading)
+
+        await manager.cancelDownload(task)
+        await run2.value
+    }
+
+    func testStaleSeedingTorrentIsRemovedFromEngineOnRelaunch() async throws {
+        let sharedEngine = FakeTorrentEngine()
+        let torrentA = try TorrentFile(TorrentFixtures.dataA)
+
+        // Session 1: torrent A completes and enters seeding, then app quits.
+        do {
+            let manager1 = makeManager(engine: sharedEngine, seedingPolicy: .untilRatio(5.0))
+            let taskA = try await manager1.addTorrentDownload(TorrentAddRequest(
+                source: .torrentFile(TorrentFixtures.dataA),
+                destinationFolder: downloadsDir,
+                startAutomatically: false
+            ))
+            let run = Task { try? await manager1.resumeDownload(taskA) }
+            _ = await waitUntil { taskA.status == .downloading }
+            sharedEngine.simulate(torrentA.infoHash) { snap in
+                snap.state = .seeding
+                snap.downloadedBytes = torrentA.totalSize
+                snap.totalBytes = torrentA.totalSize
+            }
+            let seeding = await waitUntil { taskA.status == .completed && taskA.isSeeding }
+            await run.value
+            XCTAssertTrue(seeding)
+            manager1.saveBeforeTermination()
+        }
+
+        // Engine still holds torrent A (simulating rqbit's persisted session).
+        let stillInEngine = try await sharedEngine.snapshot(of: torrentA.infoHash)
+        XCTAssertEqual(stillInEngine.state, .seeding)
+
+        // Session 2: relaunch restores torrent A as completed (not seeding) and
+        // removes it from the engine on the next torrent action, keeping files on disk.
+        let manager2 = makeManager(engine: sharedEngine)
+        XCTAssertEqual(manager2.completedTasks.count, 1)
+        XCTAssertFalse(manager2.completedTasks[0].isSeeding)
+
+        let taskB = try await manager2.addTorrentDownload(TorrentAddRequest(
+            source: .torrentFile(TorrentFixtures.dataB),
+            destinationFolder: downloadsDir,
+            startAutomatically: false
+        ))
+        let runB = Task { try? await manager2.resumeDownload(taskB) }
+        let bDownloading = await waitUntil { taskB.status == .downloading }
+        XCTAssertTrue(bDownloading)
+
+        do {
+            _ = try await sharedEngine.snapshot(of: torrentA.infoHash)
+            XCTFail("Expected stale seeding torrent to be removed from engine after relaunch")
+        } catch let error as TorrentEngineError {
+            XCTAssertEqual(error, .notFound)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manager2.completedTasks[0].destinationURL.appendingPathComponent("abc").path))
+
+        await manager2.cancelDownload(taskB)
+        await runB.value
+    }
+
+    func testSeedingPolicyModeResolvesCanonicalAndLegacyTags() {
+        XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "stopAtCompletion"), .stopAtCompletion)
+        XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "untilRatio"), .untilRatio)
+        XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "ratio"), .untilRatio)
+        XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "untilDuration"), .untilDuration)
+        XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "duration"), .untilDuration)
+        XCTAssertEqual(AppSettings.SeedingPolicyMode(storedRawValue: "unknown"), .stopAtCompletion)
     }
 }

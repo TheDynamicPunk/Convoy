@@ -25,6 +25,11 @@ macOS asks you to approve it once — see [Installing](#installing).
   come separately, merged afterwards with AVFoundation.
 - **YouTube** through yt-dlp, which the app installs on request from
   Settings → YouTube. Newer versions of it arrive with Convoy updates.
+- **BitTorrent** from magnet links and `.torrent` files, through the rqbit
+  helper, which the app installs on request from Settings → Torrents. Choose
+  which files to download, watch peers and pieces, and decide whether to keep
+  seeding afterwards. Convoy never makes itself the default magnet-link
+  handler on its own; Settings → Torrents has a button for it.
 - **Updates itself** — checks when it opens and every six hours after that,
   and asks before installing, or installs on its own if you turn that on.
 - **Queue** — filter by status (downloading, completed, paused, failed) and
@@ -43,6 +48,9 @@ macOS asks you to approve it once — see [Installing](#installing).
 
 Not supported: Safari (Apple's extension route needs a paid certificate). The
 Mac App Store doesn't allow apps in this category.
+
+Torrents aren't filed by download categories yet, and Convoy has no torrent
+search and ships no tracker lists.
 
 ## Requirements
 
@@ -165,7 +173,7 @@ installed browser's icon beside the names.
 Convoy/
 ├── Sources/
 │   ├── Convoy/                 # SwiftUI app: windows, settings, menu bar
-│   ├── DownloadEngine/         # Downloading, streams, muxing, helpers
+│   ├── DownloadEngine/         # Downloading, streams, torrents, muxing, helpers
 │   ├── IPCKit/                 # Unix-socket IPC shared by app and host
 │   ├── NativeMessagingHost/    # Browser ↔ app bridge
 │   └── HelperManifestTool/     # Maintainer tool: builds the helper list
@@ -228,6 +236,11 @@ Convoy is a general-purpose download manager. You are responsible for
 complying with the terms of the sites you use it with, and with copyright law
 where you live. Download things you have the right to download.
 
+BitTorrent works differently from an ordinary download: while a torrent
+downloads, the other people sharing it (its peers) can see your IP address,
+and Convoy uploads pieces to them. By default Convoy stops sharing a torrent as
+soon as it finishes; Settings → Torrents can keep it seeding for longer.
+
 ## License
 
 Copyright (C) 2026 Ashutosh Gupta.
@@ -241,13 +254,15 @@ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
 A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 The helper programs Convoy downloads at runtime — yt-dlp, the QuickJS
-JavaScript runtime and the bot-check provider — are separate works under their
-own licences and are not distributed with this app.
+JavaScript runtime, the bot-check provider and the rqbit BitTorrent client —
+are separate works under their own licences and are not distributed with this
+app.
 
 ## Acknowledgments
 
 - Inspired by Internet Download Manager (IDM)
 - YouTube support stands on [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- BitTorrent support stands on [rqbit](https://github.com/ikatson/rqbit)
 - Automatic updates use [Sparkle](https://github.com/sparkle-project/Sparkle)
 - Built with Swift, SwiftUI and Swift Concurrency
 

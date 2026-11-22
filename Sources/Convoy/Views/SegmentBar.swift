@@ -159,3 +159,90 @@ struct SegmentBar: View, Animatable {
         }
     }
 }
+
+/// Expanded multi-row piece grid for BitTorrent downloads.
+///
+/// Downsamples the torrent's bitfield into a compact 2D grid (up to 4 rows ×
+/// 50 columns = 200 cells) drawn in a single `Canvas`, matching `SegmentBar`'s
+/// track and fill palette. Clicking collapses back to the 1-line bar.
+struct TorrentPieceGridView: View {
+    let pieces: [SegmentMap.PieceState]
+    let color: Color
+
+    private let columns = 50
+    private let maxRows = 4
+    private let cellHeight: CGFloat = 6
+    private let gap: CGFloat = 2
+
+    private var totalPieces: Int { pieces.count }
+    private var completedPieces: Int { pieces.reduce(0) { $0 + ($1 == .done ? 1 : 0) } }
+
+    private var rowCount: Int {
+        guard totalPieces > 0 else { return 1 }
+        return min(maxRows, max(1, (totalPieces + columns - 1) / columns))
+    }
+
+    private var cellCount: Int {
+        min(totalPieces, columns * rowCount)
+    }
+
+    private var gridHeight: CGFloat {
+        CGFloat(rowCount) * cellHeight + CGFloat(max(0, rowCount - 1)) * gap
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Piece Map")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(completedPieces) of \(totalPieces) pieces")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Canvas { context, size in
+                guard cellCount > 0, size.width > 0 else { return }
+                let cols = min(columns, cellCount)
+                let cellWidth = (size.width - CGFloat(max(0, cols - 1)) * gap) / CGFloat(cols)
+                guard cellWidth > 0 else { return }
+
+                let track = Color(nsColor: .quaternaryLabelColor).opacity(0.4)
+                var tracks = Path()
+                var fills: [Int: Path] = [:]
+
+                for cell in 0..<cellCount {
+                    let row = cell / cols
+                    let col = cell % cols
+                    let x = CGFloat(col) * (cellWidth + gap)
+                    let y = CGFloat(row) * (cellHeight + gap)
+                    let rect = CGRect(x: x, y: y, width: cellWidth, height: cellHeight)
+                    let shape = Path(roundedRect: rect, cornerRadius: 1.5, style: .circular)
+                    tracks.addPath(shape)
+
+                    let start = totalPieces * cell / cellCount
+                    let end = max(start + 1, totalPieces * (cell + 1) / cellCount)
+                    var done = 0
+                    for idx in start..<min(end, totalPieces) where pieces[idx] == .done {
+                        done += 1
+                    }
+                    if done > 0 {
+                        let fraction = Double(done) / Double(max(1, end - start))
+                        let opacity = 0.35 + 0.65 * fraction
+                        let key = Int((opacity * 100).rounded())
+                        fills[key, default: Path()].addPath(shape)
+                    }
+                }
+
+                context.fill(tracks, with: .color(track))
+                for (key, path) in fills {
+                    var layer = context
+                    layer.opacity = Double(key) / 100
+                    layer.fill(path, with: .color(color))
+                }
+            }
+            .frame(height: gridHeight)
+        }
+    }
+}

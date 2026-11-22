@@ -110,8 +110,32 @@ public final class AppSettings: ObservableObject {
 
     // MARK: - Torrents
 
-    /// How long to seed after a torrent finishes: `"stopAtCompletion"`, `"ratio"`, or `"duration"`.
-    @AppStorage(Key.torrentSeedingPolicy.rawValue) public var torrentSeedingPolicyRaw: String = "stopAtCompletion"
+    /// Seeding behavior after a torrent finishes downloading. Shared between
+    /// `AppSettings` and `TorrentSettingsView` so picker tags can never drift
+    /// from the values read here.
+    public enum SeedingPolicyMode: String, CaseIterable, Identifiable, Sendable {
+        case stopAtCompletion = "stopAtCompletion"
+        case untilRatio = "untilRatio"
+        case untilDuration = "untilDuration"
+
+        public var id: String { rawValue }
+
+        /// Accepts both the canonical raw values and legacy `"ratio"` / `"duration"`
+        /// tags written by earlier builds.
+        public init(storedRawValue: String) {
+            switch storedRawValue {
+            case "untilRatio", "ratio":
+                self = .untilRatio
+            case "untilDuration", "duration":
+                self = .untilDuration
+            default:
+                self = .stopAtCompletion
+            }
+        }
+    }
+
+    /// How long to seed after a torrent finishes. Prefer `seedingPolicyMode`.
+    @AppStorage(Key.torrentSeedingPolicy.rawValue) public var torrentSeedingPolicyRaw: String = SeedingPolicyMode.stopAtCompletion.rawValue
     @AppStorage(Key.torrentSeedRatioLimit.rawValue) public var torrentSeedRatioLimit: Double = 1.0
     @AppStorage(Key.torrentSeedDurationMinutes.rawValue) public var torrentSeedDurationMinutes: Int = 60
     /// Upload speed limit in KB/s (0 = unlimited). Applied on helper launch.
@@ -122,13 +146,21 @@ public final class AppSettings: ObservableObject {
     @AppStorage(Key.torrentEnableLSD.rawValue) public var torrentEnableLSD: Bool = false
     @AppStorage(Key.torrentPersistDHT.rawValue) public var torrentPersistDHT: Bool = false
 
+    public var seedingPolicyMode: SeedingPolicyMode {
+        get { SeedingPolicyMode(storedRawValue: torrentSeedingPolicyRaw) }
+        set {
+            objectWillChange.send()
+            torrentSeedingPolicyRaw = newValue.rawValue
+        }
+    }
+
     public var seedingPolicy: SeedingPolicy {
-        switch torrentSeedingPolicyRaw {
-        case "ratio":
-            return .untilRatio(max(0.05, torrentSeedRatioLimit))
-        case "duration":
-            return .untilDuration(TimeInterval(max(1, torrentSeedDurationMinutes) * 60))
-        default:
+        switch seedingPolicyMode {
+        case .untilRatio:
+            return .untilRatio(max(0.25, torrentSeedRatioLimit))
+        case .untilDuration:
+            return .untilDuration(TimeInterval(max(15, torrentSeedDurationMinutes) * 60))
+        case .stopAtCompletion:
             return .stopAtCompletion
         }
     }

@@ -9,6 +9,11 @@ import DownloadEngine
 /// once and the server is not contacted. Only a capture missing one of them
 /// (a right-clicked link, say) triggers a probe, and the probe only ever fills
 /// in what is missing; it never overwrites something the person typed.
+///
+/// For torrents: `.torrent` files parse locally and show their full file list
+/// immediately; magnet links probe the swarm when the dialog opens so the
+/// file list appears as soon as metadata arrives, while still allowing Start
+/// before metadata finishes.
 @MainActor
 final class CaptureDialogModel: ObservableObject {
     let capture: CapturedDownload
@@ -21,6 +26,19 @@ final class CaptureDialogModel: ObservableObject {
     @Published private(set) var info: LinkInfo?
     @Published private(set) var isProbing = false
 
+    // Torrent-specific state
+    @Published private(set) var torrentFiles: [TorrentFileItem] = []
+    @Published var selectedTorrentFiles: Set<Int> = []
+    @Published var fileFilterText = ""
+    @Published private(set) var torrentTotalSize: Int64?
+    @Published private(set) var torrentInfoHashHex: String?
+    /// Non-nil when the `.torrent` file or magnet URI itself is invalid and
+    /// cannot be added. Disables both Start and Download Later.
+    @Published private(set) var torrentFatalError: String?
+    /// Non-nil when a magnet swarm probe failed or timed out. Shown as a note
+    /// while still allowing the user to start now and choose files later.
+    @Published private(set) var torrentProbeError: String?
+
     /// The last name this model put in the field itself (initially, or from
     /// the probe). Anything else in the field was typed by the person.
     private var autoName: String
@@ -30,12 +48,71 @@ final class CaptureDialogModel: ObservableObject {
         let initial = capture.suggestedFilename ?? FilenameResolver.provisionalFilename(for: capture.url)
         self.filename = initial
         self.autoName = initial
+        self.folder = capture.initialFolder
+
+        if let torrent = capture.torrent {
+            switch torrent {
+            case .torrentFile(let data):
+                if let parsed = try? TorrentFile(data) {
+                    applyParsedTorrent(parsed)
+                } else {
+                    torrentFatalError = "This file is not a valid torrent."
+                }
+            case .magnet(let uri):
+                if let parsed = try? MagnetURI(uri) {
+                    torrentInfoHashHex = parsed.infoHash.hex
+                } else {
+                    torrentFatalError = "This magnet link is not valid."
+                }
+            }
+        }
     }
 
     var nameWasEdited: Bool { filename != autoName }
 
+    var hasDeselectedTorrentFiles: Bool {
+        !torrentFiles.isEmpty && selectedTorrentFiles.count < torrentFiles.count
+    }
+
+    var canSubmit: Bool {
+        if torrentFatalError != nil {
+            return false
+        }
+        if capture.isTorrent && !torrentFiles.isEmpty && selectedTorrentFiles.isEmpty {
+            return false
+        }
+        return true
+    }
+
+    private func applyParsedTorrent(_ parsed: TorrentFile) {
+        torrentInfoHashHex = parsed.infoHash.hex
+        torrentTotalSize = parsed.totalSize
+        let items = TorrentFileItem.visibleItems(from: parsed.files)
+        torrentFiles = items
+        selectedTorrentFiles = Set(items.map(\.id))
+        if !nameWasEdited, let safe = FilenameResolver.sanitize(parsed.name) {
+            filename = safe
+            autoName = safe
+        }
+    }
+
     /// Runs from the view's `.task`, so it is cancelled with the window.
     func probeIfNeeded() async {
+        if let torrent = capture.torrent {
+            guard case .magnet(let uri) = torrent, torrentFatalError == nil else { return }
+            isProbing = true
+            do {
+                let parsed = try await DownloadManager.shared.probeMagnet(uri)
+                guard !Task.isCancelled else { return }
+                applyParsedTorrent(parsed)
+            } catch {
+                guard !Task.isCancelled else { return }
+                torrentProbeError = error.localizedDescription
+            }
+            isProbing = false
+            return
+        }
+
         // Streams are manifests: a ranged GET of one says nothing about the
         // video. A capture that already has a size and a name has nothing to
         // ask the server.
@@ -54,26 +131,29 @@ final class CaptureDialogModel: ObservableObject {
         }
     }
 
-    /// The size to show: the browser's measurement if it made one, else the
-    /// server's.
-    var size: Int64? { capture.expectedSize ?? info?.size }
+    /// The size to show: the torrent's total size, the browser's measurement,
+    /// or the server's.
+    var size: Int64? { torrentTotalSize ?? capture.expectedSize ?? info?.size }
 
     /// Only what the person changed. An untouched name is left out so the
-    /// engine can still improve it from Content-Disposition; a typed one is
-    /// final.
+    /// engine can still improve it from Content-Disposition or torrent metadata;
+    /// a typed one is final.
     func choices() -> CaptureChoices {
         var choices = CaptureChoices()
         if nameWasEdited, FilenameResolver.sanitize(filename) != nil {
             choices.filename = filename
         }
         choices.folder = folder
+        if capture.isTorrent && !torrentFiles.isEmpty && selectedTorrentFiles.count < torrentFiles.count {
+            choices.selectedTorrentFiles = selectedTorrentFiles
+        }
         return choices
     }
 }
 
 /// The capture dialog's content, laid out like the download rows it is
 /// about to become: the type icon, a semibold title, a line of metrics; then
-/// the two things worth deciding, the name and the folder, at one width.
+/// the destination folder (and flat file list for torrents).
 struct CaptureDialogView: View {
     let capture: CapturedDownload
     let waitingCount: Int
@@ -91,7 +171,7 @@ struct CaptureDialogView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 18) {
             header
 
             // Label and menu on one line: the menu takes the rest of the row.
@@ -99,17 +179,19 @@ struct CaptureDialogView: View {
                 Text("Save to")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                CaptureFolderPicker(
+                SaveFolderPicker(
                     folder: $model.folder,
-                    filename: model.filename,
-                    isStream: capture.stream != nil,
-                    hosts: CategoryRouter.hosts(from: [capture.url, capture.referrerURL])
+                    automaticTitle: automaticTitle,
+                    allowsAutomatic: !capture.isTorrent,
+                    activatesAppForOpenPanel: true
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .controlSize(.large)
 
-            if model.info?.isWebPage == true {
+            if capture.isTorrent {
+                torrentFileSection
+            } else if model.info?.isWebPage == true {
                 Label("This link opens a web page, not a file.", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
@@ -118,7 +200,7 @@ struct CaptureDialogView: View {
             footer
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: capture.isTorrent ? 500 : 460)
         .fixedSize(horizontal: false, vertical: true)
         .background(escapeCatcher)
         .task { await model.probeIfNeeded() }
@@ -131,10 +213,9 @@ struct CaptureDialogView: View {
             typeIcon
 
             VStack(alignment: .leading, spacing: 6) {
-                // The file's own name is the title, and it is the field: click
-                // it to rename. It is drawn as a real text field (the system's
-                // text background, a hairline edge, an accent edge while
-                // typing) so it reads as editable; a bare tint did not.
+                // Editable in place with a clear field outline so it reads as
+                // editable; Return submits using the default action (Start or
+                // Download Later, matching the user's auto-start setting).
                 TextField("File name", text: $model.filename)
                     .textFieldStyle(.plain)
                     .focused($nameFocused)
@@ -152,10 +233,11 @@ struct CaptureDialogView: View {
                                 lineWidth: nameFocused ? 2 : 1
                             )
                     )
-                    .onSubmit { decide(startNow: settings.autoStartDownloads) }
+                    .onSubmit {
+                        guard model.canSubmit else { return }
+                        decide(startNow: settings.autoStartDownloads)
+                    }
 
-                // Inset to line up with the typed name above. A stream has no
-                // size to show until it has been downloaded, so it gets none.
                 HStack(spacing: 10) {
                     if capture.stream == nil {
                         sizeMetric
@@ -166,8 +248,13 @@ struct CaptureDialogView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     metricDivider
-                    metric(sourceText, symbol: "globe")
-                        .help(capture.url.absoluteString)
+                    if capture.isTorrent, let hash = model.torrentInfoHashHex {
+                        metric(String(hash.prefix(12)), symbol: "number")
+                            .help(hash)
+                    } else {
+                        metric(sourceText, symbol: "globe")
+                            .help(capture.url.absoluteString)
+                    }
                 }
                 .padding(.leading, 8)
             }
@@ -177,21 +264,34 @@ struct CaptureDialogView: View {
     }
 
     /// The download rows' type icon: a tinted rounded square with a symbol.
-    /// A stream is always video; anything else is judged by its file name,
-    /// by the same `FileKind` the rows use.
+    /// Recomputes live as the user edits the filename extension.
     private var typeIcon: some View {
-        let kind: FileKind = capture.stream != nil ? .video : FileKind(filename: model.filename)
-        return ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(kind.tint.opacity(0.15))
-                .frame(width: 40, height: 40)
-            Image(systemName: kind.symbol)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(kind.tint)
+        if capture.isTorrent {
+            return AnyView(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(TorrentStyle.tint.opacity(0.15))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: TorrentStyle.symbol)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(TorrentStyle.tint)
+                }
+            )
         }
+        let kind: FileKind = capture.stream != nil ? .video : FileKind(filename: model.filename)
+        return AnyView(
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(kind.tint.opacity(0.15))
+                    .frame(width: 40, height: 40)
+                Image(systemName: kind.symbol)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(kind.tint)
+            }
+        )
     }
 
-    /// Where it came from: the page the person was on, else the file's host.
+    /// Prefer the page the person clicked on over the CDN host serving the file.
     private var sourceText: String {
         capture.referrerURL?.host ?? capture.url.host ?? capture.url.absoluteString
     }
@@ -203,7 +303,8 @@ struct CaptureDialogView: View {
         } else if model.isProbing {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
-                Text("Checking\u{2026}").font(.system(size: 11))
+                Text(capture.isTorrent ? "Getting details\u{2026}" : "Checking\u{2026}")
+                    .font(.system(size: 11))
             }
             .foregroundStyle(.secondary)
         } else {
@@ -229,6 +330,13 @@ struct CaptureDialogView: View {
     }
 
     private var kindText: String {
+        if capture.isTorrent {
+            let count = model.torrentFiles.count
+            if count > 0 {
+                return count == 1 ? "Torrent · 1 file" : "Torrent · \(count) files"
+            }
+            return "Torrent"
+        }
         if let stream = capture.stream {
             return stream.streamType == "hls" ? "HLS stream" : "DASH stream"
         }
@@ -243,14 +351,75 @@ struct CaptureDialogView: View {
         return ext.isEmpty ? "Unknown type" : "\(ext.uppercased()) file"
     }
 
+    private var automaticTitle: String {
+        let defaultFolder = SaveFolderPicker.defaultFolder(for: settings)
+        let route = DownloadManager.shared.categoryRoute(
+            filename: model.filename,
+            matchName: capture.stream != nil ? CategoryRouting.streamMatchName(for: model.filename) : nil,
+            hosts: CategoryRouter.hosts(from: [capture.url, capture.referrerURL]),
+            folderIsExplicit: false
+        )
+        let target = (route?.category.folder ?? defaultFolder).standardizedFileURL
+        return SaveFolderPicker.automaticTitle(for: target)
+    }
+
+    // MARK: - Torrent file list
+
+    private var torrentFileSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let fatal = model.torrentFatalError {
+                Label(fatal, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !model.torrentFiles.isEmpty {
+                TorrentFileListView(
+                    files: model.torrentFiles,
+                    selected: $model.selectedTorrentFiles,
+                    filterText: $model.fileFilterText,
+                    maxListHeight: 200
+                )
+
+                if model.hasDeselectedTorrentFiles, let total = model.torrentTotalSize {
+                    Text("Needs \(ByteFormat.size(total)) free on disk, even for files you skip.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            } else if model.isProbing {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Connecting to peers to fetch the file list\u{2026} You can start now and choose files afterwards.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            } else if let error = model.torrentProbeError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if model.torrentFatalError == nil {
+                Text("Files appear in the folder as they download. Peers in the swarm can see your IP address.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Toggle("Don't ask again", isOn: $model.dontAskAgain)
-                    .toggleStyle(.checkbox)
-                    .help("Captured downloads will be added straight away. Turn the dialog back on in Settings \u{2192} General.")
+                if !capture.isTorrent {
+                    Toggle("Don't ask again", isOn: $model.dontAskAgain)
+                        .toggleStyle(.checkbox)
+                        .help("Captured downloads will be added straight away. Turn the dialog back on in Settings \u{2192} General.")
+                }
                 if waitingCount > 0 {
                     Text("\(waitingCount) more waiting")
                         .font(.system(size: 11))
@@ -260,19 +429,21 @@ struct CaptureDialogView: View {
 
             Spacer(minLength: 8)
 
-            // Return triggers whichever matches "Start downloads
-            // automatically": Start when it is on, adding without starting
-            // when it is off, which is what that setting already meant.
             actionButton("Download Later", isDefault: !settings.autoStartDownloads) {
                 decide(startNow: false)
             }
+            .disabled(!model.canSubmit)
+
             actionButton("Start Download", isDefault: settings.autoStartDownloads) {
                 decide(startNow: true)
             }
+            .disabled(!model.canSubmit)
         }
         .controlSize(.large)
     }
 
+    /// Applies `.defaultAction` (Return) to whichever button matches the user's
+    /// auto-start preference so pressing Return never contradicts Settings.
     private func actionButton(_ title: String, isDefault: Bool, action: @escaping () -> Void) -> some View {
         Group {
             if isDefault {
@@ -283,9 +454,8 @@ struct CaptureDialogView: View {
         }
     }
 
-    /// Escape closes the window (discarding the capture), as the red close
-    /// button does. A zero-size button because a keyboard shortcut needs a
-    /// button to belong to.
+    /// Hidden button bound to Escape so pressing Esc dismisses the floating
+    /// panel without adding a visible Cancel button beside the two actions.
     private var escapeCatcher: some View {
         Button("Close") { onDecision(.cancel) }
             .keyboardShortcut(.cancelAction)
@@ -299,136 +469,5 @@ struct CaptureDialogView: View {
         if let folder = choices.folder { RecentDownloadFolders.record(folder) }
         if model.dontAskAgain { settings.confirmCapturedDownloads = false }
         onDecision(startNow ? .start(choices) : .later(choices))
-    }
-}
-
-// MARK: - Save-to picker
-
-private enum SaveFolderChoice: Hashable {
-    case automatic
-    case folder(URL)
-    case other
-}
-
-/// The same menu as the Add Downloads window's "Save to": Automatic first
-/// (only while download categories are in effect, previewing where this very
-/// file would be filed), then the usual folders, the last few used, and
-/// Other...
-private struct CaptureFolderPicker: View {
-    @Binding var folder: URL?
-    let filename: String
-    /// A native HLS/DASH capture. Its name has no extension yet (it is
-    /// assembled into a video file at the end), so the preview must match
-    /// extension rules the way the real add does; see `automaticTitle`.
-    let isStream: Bool
-    let hosts: [String]
-
-    @ObservedObject private var settings = AppSettings.shared
-    private let manager = DownloadManager.shared
-    @State private var recent = RecentDownloadFolders.load()
-
-    var body: some View {
-        Picker("Save to", selection: Binding<SaveFolderChoice>(
-            get: {
-                if let folder { return .folder(folder.standardizedFileURL) }
-                return manager.sortingIsActive ? .automatic : .folder(defaultFolder.standardizedFileURL)
-            },
-            set: { choice in
-                switch choice {
-                case .automatic:
-                    folder = nil
-                case .folder(let url):
-                    folder = url
-                case .other:
-                    // After the menu's fade-out, as in AddDownloadsView:
-                    // opened any sooner, the panel froze the half-faded menu.
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(100))
-                        chooseOther()
-                    }
-                }
-            }
-        )) {
-            if manager.sortingIsActive {
-                Label(automaticTitle, systemImage: "folder.badge.gearshape")
-                    .tag(SaveFolderChoice.automatic)
-                Divider()
-            }
-            ForEach(standardFolders, id: \.self) { row($0) }
-            let recents = recentChoices
-            if !recents.isEmpty {
-                Divider()
-                Text("Recent").disabled(true)
-                ForEach(recents, id: \.self) { row($0) }
-            }
-            Divider()
-            Text("Other\u{2026}").tag(SaveFolderChoice.other)
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
-    }
-
-    private func row(_ url: URL) -> some View {
-        Label(FileManager.default.displayName(atPath: url.path), systemImage: "folder")
-            .tag(SaveFolderChoice.folder(url))
-    }
-
-    private var defaultFolder: URL {
-        URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
-    }
-
-    /// "Automatic (Videos)": the folder a category would give this file by its
-    /// current name, from the same call the real add makes.
-    ///
-    /// A stream is matched as if named `.mp4`, exactly as
-    /// `DownloadManager.addStreamDownload` does. Without that, the preview
-    /// saw an extensionless name, matched no category and promised the
-    /// default folder, while the real add then filed the video into Videos.
-    private var automaticTitle: String {
-        let route = manager.categoryRoute(
-            filename: filename,
-            matchName: isStream ? CategoryRouting.streamMatchName(for: filename) : nil,
-            hosts: hosts,
-            folderIsExplicit: false
-        )
-        let target = (route?.category.folder ?? defaultFolder).standardizedFileURL
-        return "Automatic (\(FileManager.default.displayName(atPath: target.path)))"
-    }
-
-    private var standardFolders: [URL] {
-        let fm = FileManager.default
-        let candidates = [defaultFolder]
-            + fm.urls(for: .downloadsDirectory, in: .userDomainMask)
-            + fm.urls(for: .desktopDirectory, in: .userDomainMask)
-        return candidates.map(\.standardizedFileURL).reduce(into: []) { result, url in
-            if !result.contains(url) { result.append(url) }
-        }
-    }
-
-    /// Recently used folders, plus one just picked through Other... so the
-    /// menu can show it as selected.
-    private var recentChoices: [URL] {
-        let standard = standardFolders
-        var folders = recent
-        if let folder, !folders.contains(folder.standardizedFileURL) {
-            folders.insert(folder.standardizedFileURL, at: 0)
-        }
-        return folders.filter { !standard.contains($0) }
-    }
-
-    private func chooseOther() {
-        // The capture dialog never activates Convoy, but an open panel needs
-        // the app active to be reliably in front. The person has just
-        // clicked in this app, which is when macOS honours the request.
-        NSApp.activate()
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            folder = url
-        }
     }
 }

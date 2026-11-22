@@ -53,6 +53,14 @@ public enum ByteFormat {
         size(bytesPerSecond, digits: digits, locale: locale) + "/s"
     }
 
+    /// "1.25". Two decimals, matching the precision of torrent seed ratios.
+    public static func ratio(
+        _ value: Double,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        String(format: "%.2f", locale: locale, value)
+    }
+
     /// The units, smallest first, each with its symbol and its size in bytes.
     private static let ladder: [(unit: ByteCountFormatStyle.Units, symbol: String, scale: Double)] = [
         (.bytes, "B", 1),

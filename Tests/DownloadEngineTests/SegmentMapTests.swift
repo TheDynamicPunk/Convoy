@@ -85,4 +85,22 @@ final class SegmentMapTests: XCTestCase {
         XCTAssertNil(SegmentMap.pieces([[.pending], []]))
         XCTAssertNil(SegmentMap.pieces([]))
     }
+
+    // MARK: - Torrent bitfield
+
+    func testTorrentPiecesDecodesMSBFirstAndTrimsPadding() {
+        // 0b1010_0001 = [done, pending, done, pending, pending, pending, pending, done]
+        // 0b1100_0000 = [done, done, ...trailing padding]
+        let bitfield = Data([0b1010_0001, 0b1100_0000])
+        let pieces = SegmentMap.torrentPieces(from: bitfield, pieceCount: 10)
+        XCTAssertEqual(pieces, [
+            .done, .pending, .done, .pending, .pending, .pending, .pending, .done,
+            .done, .done,
+        ])
+    }
+
+    func testTorrentPiecesHandlesEmptyBitfieldAndZeroCount() {
+        XCTAssertEqual(SegmentMap.torrentPieces(from: Data()), [])
+        XCTAssertEqual(SegmentMap.torrentPieces(from: Data([0xFF]), pieceCount: 0), [])
+    }
 }

@@ -15,14 +15,28 @@ public struct TorrentDetails: Equatable, Sendable {
         public let length: Int64
         /// Whether it is among the files being downloaded.
         public let isIncluded: Bool
+        /// BEP 47 padding entry (`attr` containing `"p"`). Kept in `files` so
+        /// file indexes stay aligned with the engine's `only_files` and
+        /// `file_progress`, but hidden from user-facing file pickers and counts.
+        public let isPadding: Bool
 
-        public init(path: [String], length: Int64, isIncluded: Bool) {
+        public init(path: [String], length: Int64, isIncluded: Bool, isPadding: Bool = false) {
             self.path = path
             self.length = length
             self.isIncluded = isIncluded
+            self.isPadding = isPadding
         }
 
         public var displayPath: String { path.joined(separator: "/") }
+
+        /// True for explicit BEP 47 padding entries and conventional `.pad` /
+        /// BitComet padding paths reported by engines that omit `attr`.
+        public var isHiddenPadding: Bool {
+            if isPadding { return true }
+            if path.first == ".pad" { return true }
+            if let last = path.last, last.hasPrefix("____padding_file_") { return true }
+            return false
+        }
     }
 
     public let infoHash: TorrentInfoHash
@@ -68,6 +82,9 @@ public struct TorrentSnapshot: Equatable, Sendable {
     public var seenPeers: Int
     /// Bytes downloaded of each file, in the torrent's file order.
     public var fileProgress: [Int64]
+    /// Optional MSB-first piece bitfield (BEP 3 / rqbit `/haves`) for drawing
+    /// the live piece map in `SegmentBar`.
+    public var pieceBitfield: Data?
 
     public init(
         state: State,
@@ -79,7 +96,8 @@ public struct TorrentSnapshot: Equatable, Sendable {
         connectedPeers: Int,
         connectedSeeds: Int,
         seenPeers: Int,
-        fileProgress: [Int64]
+        fileProgress: [Int64],
+        pieceBitfield: Data? = nil
     ) {
         self.state = state
         self.downloadedBytes = downloadedBytes
@@ -91,6 +109,7 @@ public struct TorrentSnapshot: Equatable, Sendable {
         self.connectedSeeds = connectedSeeds
         self.seenPeers = seenPeers
         self.fileProgress = fileProgress
+        self.pieceBitfield = pieceBitfield
     }
 }
 
@@ -163,9 +182,18 @@ protocol TorrentEngine: Sendable {
     /// Stops and forgets the torrent. Its files stay on disk unless
     /// `deleteData` is true.
     func remove(_ torrent: TorrentInfoHash, deleteData: Bool) async throws
+
+    /// Optional MSB-first bitfield of completed pieces for the progress bar.
+    func pieceBitfield(of torrent: TorrentInfoHash) async -> Data?
+
+    /// Stops any underlying helper process so the next call starts a fresh one.
+    func stop() async
 }
 
 extension TorrentEngine {
+    func pieceBitfield(of torrent: TorrentInfoHash) async -> Data? { nil }
+    func stop() async {}
+
     /// A snapshot now and then every `interval`, until the torrent is removed
     /// (the stream then ends normally), an error occurs (it ends with that
     /// error) or the consumer stops listening.
@@ -184,7 +212,11 @@ extension TorrentEngine {
             let task = Task {
                 while !Task.isCancelled {
                     do {
-                        continuation.yield(try await self.snapshot(of: torrent))
+                        var snap = try await self.snapshot(of: torrent)
+                        if snap.state == .downloading, snap.pieceBitfield == nil {
+                            snap.pieceBitfield = await self.pieceBitfield(of: torrent)
+                        }
+                        continuation.yield(snap)
                     } catch TorrentEngineError.notFound {
                         continuation.finish()
                         return

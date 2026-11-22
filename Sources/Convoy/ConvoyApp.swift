@@ -192,7 +192,11 @@ struct ConvoyApp: App {
                     // not a capture notification, so it's unconditional and
                     // not gated by bringWindowToFrontOnCapture below.
                     appLogger.info("onOpenURL pid=\(ProcessInfo.processInfo.processIdentifier, privacy: .public) url=\(url.absoluteString)")
-                    if url.host == "add",
+                    if url.scheme?.lowercased() == "magnet" {
+                        CaptureCoordinator.shared.handleTorrent(magnet: url.absoluteString)
+                    } else if url.isFileURL && url.pathExtension.lowercased() == "torrent" {
+                        CaptureCoordinator.shared.handleTorrentFile(at: url)
+                    } else if url.host == "add",
                        let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
                        let downloadURL = components.queryItems?.first(where: { $0.name == "url" })?.value,
                        !downloadURL.isEmpty {

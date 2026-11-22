@@ -168,8 +168,15 @@ struct DeleteConfirmationSheet: View {
     /// the list" was the old copy's whole message and it's the least
     /// important half of the truth.
     private var messageLines: [String] {
-        if let single = plan.single { return singleLines(for: single) }
-        return multiLines
+        var lines = plan.single.map { singleLines(for: $0) } ?? multiLines
+        if plan.hasSeedingItems {
+            if plan.single != nil {
+                lines.append("This torrent is still seeding. Deleting it will stop uploading.")
+            } else {
+                lines.append("One or more torrents are still seeding and will stop uploading.")
+            }
+        }
+        return lines
     }
 
     private func singleLines(for item: DeletionPlan.Item) -> [String] {

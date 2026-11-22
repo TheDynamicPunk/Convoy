@@ -27,6 +27,8 @@ struct DownloadRowView: View {
     var onRequestDelete: () -> Void
     @State private var isHovering = false
     @State private var fileMissing = false
+    @State private var showingTorrentFiles = false
+    @State private var isPieceMapExpanded = false
     @Environment(\.appearsActive) private var appearsActive
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -35,8 +37,11 @@ struct DownloadRowView: View {
     static let horizontalPadding: CGFloat = 14
     static let iconSize: CGFloat = 40
     static let iconSpacing: CGFloat = 14
+    /// Left gutter reserved on every row for the torrent disclosure chevron,
+    /// so icons stay in one column whether or not a row can expand.
+    static let disclosureGutter: CGFloat = 12
     /// Where the title starts, from the row's leading edge.
-    static var textLeading: CGFloat { horizontalPadding + iconSize + iconSpacing }
+    static var textLeading: CGFloat { horizontalPadding + disclosureGutter + iconSize + iconSpacing }
 
     init(task: DownloadTask, isSelected: Bool = false, isEmphasized: Bool = true, isSelectionModeActive: Bool = false, onSelect: @escaping (Bool, Bool) -> Void = { _, _ in }, onRequestDelete: @escaping () -> Void = {}) {
         self.task = task
@@ -48,10 +53,11 @@ struct DownloadRowView: View {
     }
     
     var body: some View {
-        HStack(alignment: .center, spacing: Self.iconSpacing) {
-            fileKindIcon
-            
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: Self.iconSpacing) {
+                fileKindIcon
+
+                VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Text(task.filename)
                         .font(.system(size: 14, weight: .semibold))
@@ -73,7 +79,7 @@ struct DownloadRowView: View {
                     
                     Spacer(minLength: 8)
                     
-                    if task.status == .downloading || task.status == .waiting {
+                    if task.status == .downloading || task.status == .waiting || task.status == .validating {
                         Text("\(Int(task.progress * 100))%")
                             .font(.system(size: 12, weight: .semibold).monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -114,6 +120,9 @@ struct DownloadRowView: View {
                     HStack(spacing: 14) {
                         completedTimeMetric(task.endTime)
                         metric(icon: "internaldrive", text: ByteFormat.size(task.totalBytes, digits: .fixed))
+                        if task.isSeeding {
+                            seedingChip
+                        }
                     }
                 } else if case .failed(let error) = task.status {
                     // Was .lineLimit(1) — YouTube's specific error messages
@@ -130,10 +139,19 @@ struct DownloadRowView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .help(error?.localizedDescription ?? "Download failed")
                 } else if task.status == .paused {
-                    HStack(spacing: 10) {
-                        metric(icon: "internaldrive", text: sizeMetricText)
-                        if let parts = partsMetric {
-                            metric(icon: parts.icon, text: parts.text)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 10) {
+                            metric(icon: "internaldrive", text: sizeMetricText)
+                            if let parts = partsMetric {
+                                metric(icon: parts.icon, text: parts.text)
+                            }
+                        }
+                        if let message = task.activityMessage {
+                            Text(message)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.orange)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 } else if case .urlExpired = task.status {
@@ -190,26 +208,46 @@ struct DownloadRowView: View {
             
             actionButtons
         }
-        .padding(.vertical, 12)
-        .padding(.horizontal, Self.horizontalPadding)
+            .padding(.vertical, 12)
+            .padding(.leading, Self.horizontalPadding + Self.disclosureGutter)
+            .padding(.trailing, Self.horizontalPadding)
+            .overlay(alignment: .leading) {
+                disclosureToggle
+            }
+
+            if task.isTorrent && isPieceMapExpanded && !fileMissing {
+                Divider()
+                    .padding(.horizontal, Self.horizontalPadding)
+                torrentDetailsDrawer
+                    .padding(.horizontal, Self.horizontalPadding)
+                    .padding(.vertical, 10)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(
                     isSelected
                         ? (isEmphasized && appearsActive ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.12))
-                        : isHovering ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.5) : Color.clear
+                        : (isHovering || (task.isTorrent && isPieceMapExpanded)) ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.5) : Color.clear
                 )
         )
         .opacity(fileMissing ? 0.55 : 1.0)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard isSelectionModeActive else { return }
-            let flags = NSEvent.modifierFlags
-            onSelect(flags.contains(.shift), flags.contains(.command))
+            if isSelectionModeActive {
+                let flags = NSEvent.modifierFlags
+                onSelect(flags.contains(.shift), flags.contains(.command))
+            } else if canExpandTorrent {
+                toggleTorrentDetails()
+            }
         }
         .onHover { isHovering = $0 }
         .onAppear { refreshFileState() }
         .contextMenu { contextMenuItems }
+        .sheet(isPresented: $showingTorrentFiles) {
+            TorrentFilesSheet(task: task)
+        }
     }
     
     // MARK: - File state
@@ -257,14 +295,18 @@ struct DownloadRowView: View {
     
     @ViewBuilder
     private var fileKindIcon: some View {
+        let iconTint: Color = fileMissing ? .gray : (task.isTorrent ? TorrentStyle.tint : task.fileKind.tint)
+        let iconSymbol: String = fileMissing
+            ? "questionmark.folder"
+            : (task.isTorrent ? TorrentStyle.symbol : task.fileKind.symbol)
         ZStack {
             RoundedRectangle(cornerRadius: 10)
-                .fill((fileMissing ? Color.gray : task.fileKind.tint).opacity(0.15))
+                .fill(iconTint.opacity(0.15))
                 .frame(width: Self.iconSize, height: Self.iconSize)
             
-            Image(systemName: fileMissing ? "questionmark.folder" : task.fileKind.symbol)
+            Image(systemName: iconSymbol)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(fileMissing ? Color.gray : task.fileKind.tint)
+                .foregroundStyle(iconTint)
         }
         .overlay(alignment: .topLeading) {
             if isHovering || isSelected || isSelectionModeActive {
@@ -293,6 +335,7 @@ struct DownloadRowView: View {
                     .offset(x: 4, y: 4)
             }
         }
+
     }
     
     // MARK: - Status
@@ -334,7 +377,8 @@ struct DownloadRowView: View {
     private var statusIconName: String {
         switch task.status {
         case .waiting: return "clock.fill"
-        case .starting, .validating, .refreshingLink: return "arrow.down"
+        case .starting, .refreshingLink: return "arrow.down"
+        case .validating: return "magnifyingglass"
         case .downloading: return "arrow.down"
         case .paused: return "pause.fill"
         case .completed: return "checkmark"
@@ -364,7 +408,8 @@ struct DownloadRowView: View {
     private var statusText: String {
         switch task.status {
         case .waiting: return "Waiting"
-        case .starting, .validating, .refreshingLink: return "Starting"
+        case .starting, .refreshingLink: return "Starting"
+        case .validating: return "Checking"
         case .downloading: return "Downloading"
         case .paused: return "Paused"
         case .completed: return "Completed"
@@ -394,14 +439,53 @@ struct DownloadRowView: View {
         return ("square.grid.3x3", "\(parts.completed) of \(parts.total) parts")
     }
 
+    private var canExpandTorrent: Bool {
+        task.isTorrent && !fileMissing && !isSelectionModeActive
+    }
+
+    /// The single place the torrent details drawer opens and closes: the row
+    /// tap, the progress bar tap, the chevron and the context menu all call it.
+    /// Callers keep their own guards.
+    private func toggleTorrentDetails() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            isPieceMapExpanded.toggle()
+        }
+    }
+
+    /// Disclosure chevron, centred in the row's whole leading inset (edge
+    /// padding + gutter) so it sits evenly between the card edge and the icon.
+    /// Only torrent rows draw one; the gutter itself is reserved on every row
+    /// (see `disclosureGutter`).
+    @ViewBuilder
+    private var disclosureToggle: some View {
+        if canExpandTorrent {
+            Button(action: toggleTorrentDetails) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isHovering || isPieceMapExpanded ? .primary : .secondary)
+                    .rotationEffect(.degrees(isPieceMapExpanded ? 90 : 0))
+                    .frame(width: Self.horizontalPadding + Self.disclosureGutter, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isPieceMapExpanded ? "Hide details" : "Show details")
+            .accessibilityLabel(isPieceMapExpanded ? "Hide details" : "Show details")
+        }
+    }
+
     private var progressBar: some View {
-        SegmentBar(map: task.segmentMap, progress: task.progress, color: statusColor,
+        SegmentBar(map: task.isTorrent ? nil : task.segmentMap, progress: task.progress, color: statusColor,
                    split: showsParts ? 1 : 0)
             .frame(height: 7)
             // No `.animation(value: task.progress)`: progress changes on every
             // network chunk, so the tween never ends and this Canvas redraws
             // every display frame while a download runs.
             .animation(reduceMotion ? nil : .smooth(duration: 0.55), value: showsParts)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard canExpandTorrent else { return }
+                toggleTorrentDetails()
+            }
             .accessibilityElement()
             .accessibilityLabel("Progress")
             .accessibilityValue(progressAccessibilityValue)
@@ -419,8 +503,10 @@ struct DownloadRowView: View {
 
     /// Parts only while they're being fetched: a stopped download's gaps say
     /// nothing a single bar doesn't, and the join puts them back together.
+    /// Torrents use a clean solid bar in the row and show the 2D piece map in
+    /// the expandable drawer.
     private var showsParts: Bool {
-        task.status == .downloading && !task.isMerging && task.segmentMap != nil
+        !task.isTorrent && task.status == .downloading && !task.isMerging && task.segmentMap != nil
     }
 
     private var progressAccessibilityValue: String {
@@ -451,6 +537,9 @@ struct DownloadRowView: View {
         HStack(spacing: 10) {
             metric(icon: "internaldrive", text: sizeMetricText)
             metric(icon: "gauge.with.dots.needle.67percent", text: ByteFormat.speed(task.speed, digits: .fixed))
+            if task.isTorrent {
+                metric(icon: "arrow.up", text: ByteFormat.speed(task.uploadSpeed, digits: .fixed))
+            }
             if showsTimeLeft, task.estimatedTimeRemaining > 0 {
                 metric(icon: "clock", text: formatTime(task.estimatedTimeRemaining) + " left")
             }
@@ -472,6 +561,79 @@ struct DownloadRowView: View {
         }
     }
     
+    /// Expandable inspector drawer inside a torrent row card.
+    private var torrentDetailsDrawer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !task.torrentPieces.isEmpty {
+                TorrentPieceGridView(pieces: task.torrentPieces, color: statusColor)
+            } else {
+                Text("Piece map will appear once the download starts.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            HStack(spacing: 16) {
+                drawerStat("Downloaded", value: ByteFormat.size(task.downloadedBytes, digits: .fixed))
+                drawerStat("Uploaded", value: ByteFormat.size(task.uploadedBytes, digits: .fixed))
+                drawerStat("Ratio", value: ByteFormat.ratio(task.seedRatio))
+                drawerStat("Swarm", value: "\(task.connectedSeeds) seeds · \(task.connectedPeers) peers")
+
+                Spacer(minLength: 8)
+
+                let visibleFiles = task.torrentFiles.filter { !$0.isHiddenPadding }
+                if !visibleFiles.isEmpty && task.status != .completed {
+                    let included = visibleFiles.filter(\.isIncluded).count
+                    let total = visibleFiles.count
+                    Button {
+                        showingTorrentFiles = true
+                    } label: {
+                        Label(total > 1 ? "Files (\(included)/\(total))" : "Files", systemImage: "checklist")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if task.isSeeding {
+                    Button("Stop Seeding") {
+                        Task { await task.stopSeeding() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .padding(.leading, Self.disclosureGutter + Self.iconSize + Self.iconSpacing)
+    }
+
+    private func drawerStat(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var seedingChip: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(.green)
+            Text("Seeding · \(ByteFormat.speed(task.uploadSpeed, digits: .fixed)) · ratio \(ByteFormat.ratio(task.seedRatio))")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.secondary)
+            Button("Stop") {
+                Task { await task.stopSeeding() }
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.accentColor)
+        }
+    }
+
     /// Deliberately not SwiftUI's native `Text(date, style: .relative)` —
     /// that ticks every second, which reads as more jittery than the bug it
     /// was meant to fix. Instead this buckets into coarse, human intervals
@@ -584,7 +746,7 @@ struct DownloadRowView: View {
     private var contextMenuItems: some View {
         if fileMissing {
             Text("File not found at saved location")
-        } else if task.status == .downloading {
+        } else if task.status == .downloading || task.status == .starting || task.status == .validating || task.status == .refreshingLink {
             Button("Pause") {
                 Task { await downloadManager.pauseDownload(task) }
             }
@@ -616,6 +778,22 @@ struct DownloadRowView: View {
             }
         }
         
+        if task.isTorrent && !fileMissing {
+            Button(isPieceMapExpanded ? "Hide Details" : "Show Details") {
+                toggleTorrentDetails()
+            }
+        }
+
+        if task.isTorrent && !task.torrentFiles.isEmpty && task.status != .completed {
+            Button("Choose Files…") { showingTorrentFiles = true }
+        }
+
+        if task.isSeeding {
+            Button("Stop Seeding") {
+                Task { await task.stopSeeding() }
+            }
+        }
+
         if task.status == .completed && !fileMissing {
             Button("Show in Finder") { revealInFinder() }
             Button("Open") { openFile() }

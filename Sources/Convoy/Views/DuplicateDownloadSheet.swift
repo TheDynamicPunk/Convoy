@@ -278,7 +278,8 @@ struct DuplicateDownloadSheet: View {
     private var existingStatusText: String {
         switch existing.status {
         case .waiting:                                  return "Waiting"
-        case .starting, .validating, .refreshingLink:   return "Starting"
+        case .starting, .refreshingLink:               return "Starting"
+        case .validating:                              return "Checking"
         case .downloading:                              return "Downloading"
         case .paused:                                   return "Paused"
         case .completed:                                return "Completed"
