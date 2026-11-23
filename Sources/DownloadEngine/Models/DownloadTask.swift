@@ -84,6 +84,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
     
     @Published public private(set) var status: DownloadStatus = .waiting {
         didSet {
+            if status == .completed {
+                _decodedTorrentPieces = nil
+            }
             updateActivityMessage()
             refreshSegmentMap(force: true)
         }
@@ -139,10 +142,30 @@ public final class DownloadTask: ObservableObject, Identifiable {
     @Published public private(set) var connectedSeeds: Int = 0
     @Published public private(set) var torrentFiles: [TorrentDetails.File] = []
     @Published public private(set) var torrentFileProgress: [Int64] = []
-    /// Live piece states decoded from the engine's `/haves` bitfield.
-    @Published public private(set) var torrentPieces: [SegmentMap.PieceState] = []
+    /// Cached decoded piece states, invalidated whenever `lastTorrentBitfield` changes.
+    private var _decodedTorrentPieces: [SegmentMap.PieceState]?
     /// Raw `/haves` bitfield retained so `downloads.json` can restore the piece map on relaunch.
     internal private(set) var lastTorrentBitfield: Data?
+
+    /// Live piece states decoded lazily from the engine's `/haves` bitfield.
+    /// Decoded on demand so collapsed torrent rows never decode large piece
+    /// arrays on `@MainActor` every snapshot tick.
+    public var torrentPieces: [SegmentMap.PieceState] {
+        if let cached = _decodedTorrentPieces {
+            return cached
+        }
+        let pieceCount: Int? = if case .torrent(let t) = kind { t.pieceCount } else { nil }
+        let decoded: [SegmentMap.PieceState]
+        if let bitfield = lastTorrentBitfield, !bitfield.isEmpty {
+            decoded = SegmentMap.torrentPieces(from: bitfield, pieceCount: pieceCount)
+        } else if status == .completed, let count = pieceCount, count > 0 {
+            decoded = [SegmentMap.PieceState](repeating: .done, count: count)
+        } else {
+            decoded = []
+        }
+        _decodedTorrentPieces = decoded
+        return decoded
+    }
 
     public var isTorrent: Bool {
         if case .torrent = kind { return true }
@@ -975,10 +998,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         }
         if let initialPieceBitfield, !initialPieceBitfield.isEmpty {
             self.lastTorrentBitfield = initialPieceBitfield
-            self.torrentPieces = SegmentMap.torrentPieces(from: initialPieceBitfield, pieceCount: torrent.pieceCount)
-        } else if status == .completed, let count = torrent.pieceCount, count > 0 {
-            self.torrentPieces = [SegmentMap.PieceState](repeating: .done, count: count)
         }
+        self._decodedTorrentPieces = nil
     }
 
     /// Stops seeding a completed torrent and removes it from the engine
@@ -1273,9 +1294,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
         connectedSeeds = snapshot.connectedSeeds
         torrentFileProgress = snapshot.fileProgress
         if let bitfield = snapshot.pieceBitfield, !bitfield.isEmpty, bitfield != lastTorrentBitfield {
+            objectWillChange.send()
             lastTorrentBitfield = bitfield
-            let pieceCount: Int? = if case .torrent(let t) = kind { t.pieceCount } else { nil }
-            torrentPieces = SegmentMap.torrentPieces(from: bitfield, pieceCount: pieceCount)
+            _decodedTorrentPieces = nil
         }
 
         // Exponential smoothing so speeds and ETA do not jitter wildly.

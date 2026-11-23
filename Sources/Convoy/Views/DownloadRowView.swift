@@ -615,6 +615,12 @@ struct DownloadRowView: View {
         .foregroundStyle(.secondary)
     }
     
+    private static let completedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return formatter
+    }()
+
     private func coarseRelativeText(_ date: Date) -> String {
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return "just now" }
@@ -633,9 +639,7 @@ struct DownloadRowView: View {
             let unit = days == 1 ? "day" : "days"
             return "\(days) \(unit) ago"
         }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
+        return Self.completedDateFormatter.string(from: date)
     }
     
     // MARK: - Row buttons (non-destructive only)

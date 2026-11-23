@@ -37,7 +37,11 @@ struct TorrentFileListView: View {
         return files.filter { $0.path.localizedCaseInsensitiveContains(query) }
     }
 
-    private var allIDs: Set<Int> { Set(files.map(\.id)) }
+    private var filteredIDs: Set<Int> { Set(filteredFiles.map(\.id)) }
+
+    private var filteredSelectedCount: Int {
+        filteredFiles.reduce(0) { $0 + (selected.contains($1.id) ? 1 : 0) }
+    }
 
     private var visibleSelectedCount: Int {
         files.reduce(0) { $0 + (selected.contains($1.id) ? 1 : 0) }
@@ -57,16 +61,16 @@ struct TorrentFileListView: View {
                     .controlSize(.small)
 
                 Button("All") {
-                    selected = allIDs
+                    selected.formUnion(filteredIDs)
                 }
                 .controlSize(.small)
-                .disabled(visibleSelectedCount == files.count)
+                .disabled(filteredFiles.isEmpty || filteredSelectedCount == filteredFiles.count)
 
                 Button("None") {
-                    selected.removeAll()
+                    selected.subtract(filteredIDs)
                 }
                 .controlSize(.small)
-                .disabled(visibleSelectedCount == 0)
+                .disabled(filteredSelectedCount == 0)
             }
 
             ScrollView {
