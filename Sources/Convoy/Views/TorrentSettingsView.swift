@@ -33,13 +33,17 @@ struct TorrentSettingsView: View {
                     if let status {
                         readinessRow(status)
                         InstallOutput(run: installRun)
+                        if status.installed {
+                            Toggle("Keep helpers up to date", isOn: $settings.keepHelpersUpToDate)
+                            TorrentHelperAutoUpdateStatus()
+                        }
                     } else {
                         ProgressView().controlSize(.small)
                     }
                 } header: {
                     Text("BitTorrent Helper")
                 } footer: {
-                    Text("The helper is downloaded from its official release. Newer versions come with Convoy updates.")
+                    Text("The helper is downloaded from its official release. Newer versions come with Convoy updates. Automatic updates are skipped on a personal hotspot or in Low Data Mode.")
                 }
 
                 Section {
@@ -207,7 +211,7 @@ struct TorrentSettingsView: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("Restart the helper to apply changes now, or they'll apply on next launch.")
+                    Text(restartBarMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -225,6 +229,15 @@ struct TorrentSettingsView: View {
             .padding(.vertical, 10)
             .background(.bar)
         }
+    }
+
+    private var hasSeedingTorrents: Bool {
+        downloadManager.completedTasks.contains { $0.isTorrent && $0.isSeeding }
+    }
+
+    private var restartBarMessage: String {
+        let base = "Restart the helper to apply changes now, or they'll apply on next launch."
+        return hasSeedingTorrents ? "\(base) Active seeding will stop." : base
     }
 
     private func restartHelperNow() async {
@@ -272,13 +285,18 @@ struct TorrentSettingsView: View {
 
     private func install() async {
         let wasInstalled = status?.installed ?? false
+        var binaryUpdated = false
         await installRun.run(describe: { result in
             if result.updated.isEmpty {
                 return .upToDate("Already up to date.")
             }
+            binaryUpdated = true
             return wasInstalled ? .upToDate("Updated the BitTorrent helper.") : nil
         }) { progress in
             try await TorrentHelperInstaller.shared.installOrUpdate(progress: progress)
+        }
+        if binaryUpdated {
+            await downloadManager.restartTorrentHelper()
         }
         status = await TorrentHelperInstaller.shared.currentStatus()
     }
@@ -302,6 +320,37 @@ struct TorrentSettingsView: View {
                     magnetHandlerError = error.localizedDescription
                 }
                 refreshDefaultMagnetHandler()
+            }
+        }
+    }
+
+    private struct TorrentHelperAutoUpdateStatus: View {
+        @ObservedObject private var autoUpdate = HelperAutoUpdate.shared
+
+        var body: some View {
+            switch autoUpdate.state {
+            case .idle:
+                EmptyView()
+            case .updating:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Updating helpers…").font(.callout)
+                }
+            case .waiting(let reason):
+                Label(message(for: reason), systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+        }
+
+        private func message(for reason: HelperAutoUpdate.Reason) -> String {
+            switch reason {
+            case .turnedOff:
+                "Newer helpers are available. Reinstall above to get them."
+            case .meteredConnection:
+                "Newer helpers are available, waiting for a connection that isn't metered."
+            case .failed:
+                "Couldn't update the helpers. Convoy will try again next time it opens."
             }
         }
     }

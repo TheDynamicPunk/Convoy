@@ -95,6 +95,31 @@
             </array>
         </dict>
     </array>
+
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.bittorrent.torrent</string>
+            <key>UTTypeDescription</key>
+            <string>BitTorrent Document</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>torrent</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/x-bittorrent</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
     
     <!-- Sparkle. Both of these are compiled into every copy and permanent:
          an installed copy trusts this one key and fetches this one URL, and

@@ -42,8 +42,8 @@ final class ClickWatcher {
               // inside these bounds can still be theirs.
               let target = content.superview?.hitTest(event.locationInWindow),
               target.isDescendant(of: Self.column(of: view) ?? content),
-              // A text field takes focus itself.
-              !(target is NSText || target is NSTextField)
+              // A text field (or any subview inside one) takes focus itself.
+              !sequence(first: target, next: \.superview).contains(where: { $0 is NSText || $0 is NSTextField })
         else { return }
         pressed = target
         DispatchQueue.main.async { [onClick] in onClick(target) }

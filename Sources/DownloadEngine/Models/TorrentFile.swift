@@ -57,8 +57,9 @@ public struct TorrentFile: Equatable, Sendable {
         public var displayPath: String { path.joined(separator: "/") }
     }
 
-    /// Hard cap on `.torrent` metadata file size to prevent UI freezes and OOMs.
-    public static let maxFileSizeBytes: Int64 = 25 * 1024 * 1024
+    /// Hard cap on `.torrent` metadata file size (aligned with `Bencode.maxInputSize`)
+    /// to prevent UI freezes and OOMs.
+    public static let maxFileSizeBytes: Int64 = Int64(Bencode.maxInputSize)
     /// Hard cap on SHA-1 piece entries in `info.pieces`.
     public static let maxPieceCount = 1_000_000
 
@@ -91,6 +92,8 @@ public struct TorrentFile: Equatable, Sendable {
         let decoded: Bencode.Decoded
         do {
             decoded = try Bencode.decode(input)
+        } catch Bencode.DecodeError.tooLarge {
+            throw TorrentFileError.fileTooLarge(Int64(input.count))
         } catch let error as Bencode.DecodeError {
             throw TorrentFileError.invalidBencode(error)
         }
@@ -186,7 +189,7 @@ public struct TorrentFile: Equatable, Sendable {
     private static func validate(component: String) throws {
         if component.isEmpty || component == "." || component == ".."
             || component.contains("/") || component.contains("\\")
-            || component.contains(":") || component.contains("\0") {
+            || component.contains("\0") {
             throw TorrentFileError.unsafePath(component)
         }
         for scalar in component.unicodeScalars {

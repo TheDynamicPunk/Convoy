@@ -40,7 +40,15 @@ public final class HelperAutoUpdate: ObservableObject {
         case failed
     }
 
+    /// Which helper group(s) are installed and covered by an auto-update state.
+    public enum Scope: Equatable, Sendable {
+        case youtube
+        case torrent
+        case both
+    }
+
     @Published public private(set) var state: State = .idle
+    @Published public private(set) var scope: Scope = .youtube
 
     private static let lastSequenceKey = "helperAutoUpdateLastSequence"
     private static let logger = Logger(subsystem: "Convoy", category: "HelperAutoUpdate")
@@ -61,12 +69,15 @@ public final class HelperAutoUpdate: ObservableObject {
         // The cheap path, taken on all but a handful of launches.
         guard lastReconciled != manifest.sequence else { return }
 
-        // Never installed helpers: nothing to maintain. Recorded so this
+        // Never installed any helpers: nothing to maintain. Recorded so this
         // doesn't re-evaluate on every launch until the list changes again.
-        guard await YouTubeHelperInstaller.shared.currentStatus().ytdlpInstalled else {
+        let ytdlpInstalled = await YouTubeHelperInstaller.shared.currentStatus().ytdlpInstalled
+        let rqbitInstalled = await TorrentHelperInstaller.shared.currentStatus().installed
+        guard ytdlpInstalled || rqbitInstalled else {
             defaults.set(manifest.sequence, forKey: Self.lastSequenceKey)
             return
         }
+        scope = (ytdlpInstalled && rqbitInstalled) ? .both : (rqbitInstalled ? .torrent : .youtube)
 
         guard AppSettings.shared.keepHelpersUpToDate else {
             state = .waiting(.turnedOff)
@@ -81,12 +92,23 @@ public final class HelperAutoUpdate: ObservableObject {
 
         state = .updating
         do {
-            let result = try await YouTubeHelperInstaller.shared.installOrUpdate { _ in }
+            var updated: [String] = []
+            if ytdlpInstalled {
+                let ytResult = try await YouTubeHelperInstaller.shared.installOrUpdate { _ in }
+                updated.append(contentsOf: ytResult.updated)
+            }
+            if rqbitInstalled {
+                let torrentResult = try await TorrentHelperInstaller.shared.installOrUpdate { _ in }
+                updated.append(contentsOf: torrentResult.updated)
+                if !torrentResult.updated.isEmpty {
+                    await DownloadManager.shared.restartTorrentHelper()
+                }
+            }
             defaults.set(manifest.sequence, forKey: Self.lastSequenceKey)
             state = .idle
             Self.logger.notice("""
             brought helpers up to list \(manifest.sequence, privacy: .public): \
-            updated \(result.updated.joined(separator: ", "), privacy: .public)
+            updated \(updated.joined(separator: ", "), privacy: .public)
             """)
         } catch {
             // Deliberately not recording the sequence, so the next launch

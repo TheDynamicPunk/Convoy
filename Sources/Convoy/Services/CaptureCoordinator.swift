@@ -95,6 +95,10 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
             if let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
                Int64(size) > TorrentFile.maxFileSizeBytes {
                 captureLogger.warning("rejected oversized .torrent file (\(size, privacy: .public) bytes) at \(fileURL.path, privacy: .public)")
+                let message = TorrentFileError.fileTooLarge(Int64(size)).localizedDescription
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .torrentOpenFailed, object: message)
+                }
                 return
             }
             let data: Data
@@ -106,6 +110,10 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
             }
             if Int64(data.count) > TorrentFile.maxFileSizeBytes {
                 captureLogger.warning("rejected oversized .torrent data (\(data.count, privacy: .public) bytes)")
+                let message = TorrentFileError.fileTooLarge(Int64(data.count)).localizedDescription
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .torrentOpenFailed, object: message)
+                }
                 return
             }
             let parsed = try? TorrentFile(data)

@@ -522,7 +522,8 @@ public final class DownloadManager: ObservableObject {
 
     /// Stops the torrent helper so the next launch picks up updated Settings →
     /// Torrents options (upload limit, listening port, UPnP, LSD, DHT persistence).
-    /// Active torrents are paused cleanly before stopping and resumed afterward.
+    /// Active torrents are paused cleanly without releasing their slots to queued
+    /// downloads, then resumed immediately after the helper stops.
     public func restartTorrentHelper() async {
         let activeTorrents = tasks.filter { task in
             task.isTorrent && (
@@ -531,11 +532,18 @@ public final class DownloadManager: ObservableObject {
         }
         let seedingTorrents = completedTasks.filter { $0.isTorrent && $0.isSeeding }
 
+        // Pause directly instead of calling pauseDownload(task), which invokes
+        // startNextQueued() and would let a waiting download steal a slot before
+        // these active torrents resume.
         for task in activeTorrents {
-            await pauseDownload(task)
+            await task.pause()
+            releaseActiveSlot(for: task)
         }
         for task in seedingTorrents {
             await task.stopSeeding()
+        }
+        if !activeTorrents.isEmpty || !seedingTorrents.isEmpty {
+            savePersistedTasks()
         }
 
         await torrentEngine.stop()
@@ -552,11 +560,22 @@ public final class DownloadManager: ObservableObject {
     private func cleanUpStaleSeedingTorrents() async {
         guard !staleSeedingHashes.isEmpty else { return }
         let hashes = staleSeedingHashes
-        staleSeedingHashes.removeAll()
+        var removedAny = false
         for hash in hashes {
-            try? await torrentEngine.remove(hash, deleteData: false)
+            do {
+                try await torrentEngine.remove(hash, deleteData: false)
+                staleSeedingHashes.remove(hash)
+                removedAny = true
+            } catch TorrentEngineError.notFound {
+                staleSeedingHashes.remove(hash)
+                removedAny = true
+            } catch {
+                // Keep the hash so a future helper launch retries cleanup.
+            }
         }
-        savePersistedTasks()
+        if removedAny {
+            savePersistedTasks()
+        }
     }
 
     /// Adds a BitTorrent download from a magnet link or `.torrent` file.
@@ -1765,7 +1784,7 @@ public final class DownloadManager: ObservableObject {
                 // pieceCount reconstructs the completed piece grid on relaunch.
                 torrent = PersistedDownloadTask.PersistedTorrent(
                     from: t,
-                    wasSeeding: task.isSeeding,
+                    wasSeeding: task.isSeeding || staleSeedingHashes.contains(t.infoHash),
                     uploadedBytes: task.uploadedBytes,
                     pieceBitfield: nil
                 )
@@ -2155,6 +2174,10 @@ public extension Notification.Name {
     /// Posted when the user tries to add a torrent whose info hash is already
     /// in the download list. Carries the existing `DownloadTask` as `object`.
     static let torrentAlreadyAdded = Notification.Name("torrentAlreadyAdded")
+    /// Posted when opening a `.torrent` file fails before a task can be created
+    /// (e.g. file exceeds `TorrentFile.maxFileSizeBytes`). Carries the error
+    /// message `String` as `object`.
+    static let torrentOpenFailed = Notification.Name("torrentOpenFailed")
     /// Posted whenever pendingConflict becomes a new (different) conflict —
     /// see its doc comment above. The app layer uses this to bring the
     /// window forward for the duplicate-conflict sheet, unconditionally.

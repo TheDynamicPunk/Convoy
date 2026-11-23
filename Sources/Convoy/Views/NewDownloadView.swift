@@ -157,6 +157,7 @@ struct AddDownloadsView: View {
             }
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: isSingleYouTubeURL)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: isMagnetOnly)
         .fileImporter(isPresented: $showingFolderPicker, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
                 destination = url
@@ -186,6 +187,10 @@ struct AddDownloadsView: View {
         guard validURLs.count == 1, let first = validURLs.first else { return false }
         let host = first.host?.lowercased() ?? ""
         return host.contains("youtube.com") || host == "youtu.be"
+    }
+
+    private var isMagnetOnly: Bool {
+        !validURLs.isEmpty && validURLs.allSatisfy { $0.scheme?.lowercased() == "magnet" }
     }
     
     /// Matches DuplicateDownloadSheet's header: a tinted rounded-rect chip
@@ -704,7 +709,7 @@ struct AddDownloadsView: View {
     }
 
     /// Where the file goes, and the segment count when it can apply (yt-dlp
-    /// does its own fetching for YouTube, so there it's just the folder).
+    /// and BitTorrent do their own fetching, so there it's just the folder).
     private var optionsSection: some View {
         VStack(alignment: .leading, spacing: labelGap) {
             sectionHeader("Options", systemImage: "slider.horizontal.3")
@@ -720,7 +725,7 @@ struct AddDownloadsView: View {
                 .padding(.horizontal, 12)
                 .frame(minHeight: 40)
 
-                if !isSingleYouTubeURL {
+                if !isSingleYouTubeURL && !isMagnetOnly {
                     rowDivider
                     segmentsRow
                 }
@@ -735,7 +740,7 @@ struct AddDownloadsView: View {
         SaveFolderPicker(
             folder: $destination,
             automaticTitle: SaveFolderPicker.automaticTitle(for: automaticPreviewFolder),
-            allowsAutomatic: true,
+            allowsAutomatic: !isMagnetOnly,
             activatesAppForOpenPanel: false,
             onChooseOther: { showingFolderPicker = true }
         )
@@ -1004,6 +1009,10 @@ struct AddDownloadsView: View {
         guard !matched.isEmpty else { return false }
 
         let group = DispatchGroup()
+        let lock = NSLock()
+        var openedAny = false
+        var dropError: String?
+
         for (provider, matchType) in matched {
             group.enter()
             provider.loadFileRepresentation(forTypeIdentifier: matchType.identifier) { url, _ in
@@ -1012,13 +1021,25 @@ struct AddDownloadsView: View {
                 if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
                    Int64(size) > TorrentFile.maxFileSizeBytes {
                     logger.warning("Ignored oversized dropped .torrent file (\(size, privacy: .public) bytes)")
+                    lock.lock()
+                    dropError = TorrentFileError.fileTooLarge(Int64(size)).localizedDescription
+                    lock.unlock()
                     return
                 }
-                guard let data = try? Data(contentsOf: url),
-                      Int64(data.count) <= TorrentFile.maxFileSizeBytes else { return }
+                guard let data = try? Data(contentsOf: url) else { return }
+                if Int64(data.count) > TorrentFile.maxFileSizeBytes {
+                    logger.warning("Ignored oversized dropped .torrent data (\(data.count, privacy: .public) bytes)")
+                    lock.lock()
+                    dropError = TorrentFileError.fileTooLarge(Int64(data.count)).localizedDescription
+                    lock.unlock()
+                    return
+                }
                 let parsed = try? TorrentFile(data)
                 let fallbackName = url.deletingPathExtension().lastPathComponent
                 let sourceURL = url
+                lock.lock()
+                openedAny = true
+                lock.unlock()
                 Task { @MainActor in
                     CaptureCoordinator.shared.handleTorrentData(
                         data,
@@ -1031,7 +1052,14 @@ struct AddDownloadsView: View {
             }
         }
         group.notify(queue: .main) {
-            dismiss()
+            if openedAny {
+                if let dropError {
+                    NotificationCenter.default.post(name: .torrentOpenFailed, object: dropError)
+                }
+                dismiss()
+            } else if let dropError {
+                errorMessage = dropError
+            }
         }
         return true
     }

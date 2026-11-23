@@ -15,7 +15,7 @@ public actor TorrentHelperInstaller {
     private var rqbitPath: String { HelperLocations.rqbit }
 
     public func currentStatus() async -> Status {
-        let installed = FileManager.default.fileExists(atPath: rqbitPath)
+        let installed = FileManager.default.isExecutableFile(atPath: rqbitPath)
         var version: String?
         if installed {
             version = (try? await HelperManifestStore.shared.manifest().version(of: "rqbit"))

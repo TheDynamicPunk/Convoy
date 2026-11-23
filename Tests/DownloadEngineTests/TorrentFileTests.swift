@@ -209,9 +209,12 @@ final class TorrentFileTests: XCTestCase {
         assertThrows(torrent(info: info), .invalidField("pieces"))
     }
 
-    func testUnsafePathRejectsBackslashColonControlAndBiDiCharacters() {
+    func testUnsafePathRejectsBackslashControlAndBiDiCharactersButAllowsColons() throws {
+        let withColon = "Movie: Director's Cut.mkv"
+        let parsed = try TorrentFile(torrent(info: "d6:lengthi5e4:name\(withColon.utf8.count):\(withColon)12:piece lengthi16384e\(TorrentFixtures.pieces)e"))
+        XCTAssertEqual(parsed.name, withColon)
+
         assertThrows(torrent(info: "d6:lengthi5e4:name3:a\\b12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a\\b"))
-        assertThrows(torrent(info: "d6:lengthi5e4:name3:a:b12:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a:b"))
         assertThrows(torrent(info: "d6:lengthi5e4:name4:a\nb112:piece lengthi16384e\(TorrentFixtures.pieces)e"), .unsafePath("a\nb1"))
         let spoofed = "invoice\u{202E}fdp.exe"
         let spoofedLen = spoofed.utf8.count

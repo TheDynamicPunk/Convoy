@@ -401,6 +401,21 @@ actor RqbitEngine: TorrentEngine {
                 persistDHT: activeOptions.persistDHT
             )
             return Running(process: process, client: client, launchedConfig: launchedConfig)
+        } catch LaunchAttempt.portTaken(let output) {
+            client.invalidate()
+            process.stop()
+            _ = await process.waitForExit()
+            // If the user pinned a fixed peer port and the collision wasn't on
+            // our randomly chosen loopback API port, fail fast with an
+            // actionable message instead of retrying the same occupied port 3x.
+            if let fixedPeer = activeOptions.peerPort,
+               TorrentHelperConfig.listenPortRange.contains(Int(fixedPeer)),
+               !output.contains("127.0.0.1:\(apiPort)") {
+                throw TorrentEngineError.helperFailedToStart(
+                    "Port \(fixedPeer) is already in use. Choose another port or set it to 0 in Settings → Torrents."
+                )
+            }
+            throw LaunchAttempt.portTaken(output)
         } catch {
             client.invalidate()
             process.stop()

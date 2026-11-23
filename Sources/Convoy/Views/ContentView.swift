@@ -443,6 +443,10 @@ struct ContentView: View {
             let name = (note.object as? DownloadTask)?.filename ?? "This torrent"
             showToast("\"\(name)\" is already in your downloads.")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .torrentOpenFailed)) { note in
+            let message = (note.object as? String) ?? "Couldn't open this .torrent file."
+            showToast(message)
+        }
         .overlay(alignment: .bottomTrailing) {
             BottomBannerStack(toastMessage: toastMessage, onDismissToast: dismissToast)
                 .padding(.bottom, 16)
@@ -891,7 +895,7 @@ private struct BottomBannerStack: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
             if case .waiting(let reason) = helperAutoUpdate.state, !helperNoticeDismissed {
-                StaleHelpersBanner(reason: reason) { helperNoticeDismissed = true }
+                StaleHelpersBanner(reason: reason, scope: helperAutoUpdate.scope) { helperNoticeDismissed = true }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
             if showStorageNotice {
@@ -919,14 +923,14 @@ private struct BottomBannerStack: View {
     }
 }
 
-/// Says that a Convoy update brought newer YouTube helpers that aren't
-/// installed yet.
+/// Says that a Convoy update brought newer helpers that aren't installed yet.
 ///
 /// Only ever shown when they were not fetched automatically — turned off, or
 /// a metered connection. When they update by themselves nothing is said,
 /// because nothing needs doing.
 private struct StaleHelpersBanner: View {
     let reason: HelperAutoUpdate.Reason
+    let scope: HelperAutoUpdate.Scope
     let onDismiss: () -> Void
 
     @Environment(\.openSettings) private var openSettings
@@ -939,8 +943,8 @@ private struct StaleHelpersBanner: View {
                     .font(.system(size: 12.5))
                     .fixedSize(horizontal: false, vertical: true)
 
-                Button("Open YouTube Settings") {
-                    selectedSectionName = "youtube"
+                Button(buttonTitle) {
+                    selectedSectionName = targetSection
                     openSettings()
                     onDismiss()
                 }
@@ -950,14 +954,41 @@ private struct StaleHelpersBanner: View {
         }
     }
 
+    private var buttonTitle: String {
+        switch scope {
+        case .youtube: "Open YouTube Settings"
+        case .torrent: "Open Torrents Settings"
+        case .both: "Open Helper Settings"
+        }
+    }
+
+    private var targetSection: String {
+        switch scope {
+        case .torrent: "torrents"
+        case .youtube, .both: "youtube"
+        }
+    }
+
     private var message: String {
-        switch reason {
-        case .turnedOff:
+        switch (reason, scope) {
+        case (.turnedOff, .youtube):
             "This update includes newer YouTube helpers. Reinstall them to stay current."
-        case .meteredConnection:
+        case (.turnedOff, .torrent):
+            "This update includes a newer BitTorrent helper. Reinstall it to stay current."
+        case (.turnedOff, .both):
+            "This update includes newer helpers. Reinstall them to stay current."
+        case (.meteredConnection, .youtube):
             "Newer YouTube helpers are waiting for a connection that isn't metered."
-        case .failed:
+        case (.meteredConnection, .torrent):
+            "A newer BitTorrent helper is waiting for a connection that isn't metered."
+        case (.meteredConnection, .both):
+            "Newer helpers are waiting for a connection that isn't metered."
+        case (.failed, .youtube):
             "Couldn't update the YouTube helpers. Convoy will try again next time it opens."
+        case (.failed, .torrent):
+            "Couldn't update the BitTorrent helper. Convoy will try again next time it opens."
+        case (.failed, .both):
+            "Couldn't update the helpers. Convoy will try again next time it opens."
         }
     }
 }
