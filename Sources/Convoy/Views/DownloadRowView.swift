@@ -90,7 +90,7 @@ struct DownloadRowView: View {
                 // One bar for every state that has one, not one per branch
                 // below: a bar that keeps its identity across states can
                 // animate between them (see SegmentBar).
-                if !fileMissing && showsProgressBar {
+                if !fileMissing && task.status.showsProgressBar {
                     progressBar
                 }
 
@@ -331,7 +331,7 @@ struct DownloadRowView: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white)
                     .padding(3)
-                    .background(Circle().fill(statusColor))
+                    .background(Circle().fill(task.status.color))
                     .offset(x: 4, y: 4)
             }
         }
@@ -363,13 +363,13 @@ struct DownloadRowView: View {
                     .padding(.vertical, 2)
                     .background(Color.gray.opacity(0.13), in: Capsule())
             } else if task.status != .completed {
-                Text(statusText)
+                Text(task.status.label)
                     .font(.system(size: 10, weight: .semibold))
                     .textCase(.uppercase)
-                    .foregroundStyle(statusColor)
+                    .foregroundStyle(task.status.color)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(statusColor.opacity(0.13), in: Capsule())
+                    .background(task.status.color.opacity(0.13), in: Capsule())
             }
         }
     }
@@ -387,37 +387,6 @@ struct DownloadRowView: View {
         case .urlExpired: return "link.slash"
         case .destinationMissing: return "questionmark.folder"
         case .awaitingDuplicateResolution: return "exclamationmark.circle.fill"
-        }
-    }
-    
-    private var statusColor: Color {
-        switch task.status {
-        case .waiting: return .orange
-        case .starting, .validating, .refreshingLink: return .blue
-        case .downloading: return .blue
-        case .paused: return .yellow
-        case .completed: return .green
-        case .failed: return .red
-        case .cancelled: return .gray
-        case .urlExpired: return .orange
-        case .destinationMissing: return .orange
-        case .awaitingDuplicateResolution: return .orange
-        }
-    }
-    
-    private var statusText: String {
-        switch task.status {
-        case .waiting: return "Waiting"
-        case .starting, .refreshingLink: return "Starting"
-        case .validating: return "Checking"
-        case .downloading: return "Downloading"
-        case .paused: return "Paused"
-        case .completed: return "Completed"
-        case .failed: return "Failed"
-        case .cancelled: return "Cancelled"
-        case .urlExpired: return "Expired"
-        case .destinationMissing: return "Folder Missing"
-        case .awaitingDuplicateResolution: return "Needs Your Input"
         }
     }
     
@@ -474,7 +443,7 @@ struct DownloadRowView: View {
     }
 
     private var progressBar: some View {
-        SegmentBar(map: task.isTorrent ? nil : task.segmentMap, progress: task.progress, color: statusColor,
+        SegmentBar(map: task.isTorrent ? nil : task.segmentMap, progress: task.progress, color: task.status.color,
                    split: showsParts ? 1 : 0)
             .frame(height: 7)
             // No `.animation(value: task.progress)`: progress changes on every
@@ -489,16 +458,6 @@ struct DownloadRowView: View {
             .accessibilityElement()
             .accessibilityLabel("Progress")
             .accessibilityValue(progressAccessibilityValue)
-    }
-
-    private var showsProgressBar: Bool {
-        switch task.status {
-        case .waiting, .starting, .validating, .refreshingLink, .downloading,
-             .paused, .urlExpired, .destinationMissing:
-            return true
-        case .completed, .failed, .cancelled, .awaitingDuplicateResolution:
-            return false
-        }
     }
 
     /// Parts only while they're being fetched: a stopped download's gaps say
@@ -565,7 +524,7 @@ struct DownloadRowView: View {
     private var torrentDetailsDrawer: some View {
         VStack(alignment: .leading, spacing: 10) {
             if !task.torrentPieces.isEmpty {
-                TorrentPieceGridView(pieces: task.torrentPieces, color: statusColor)
+                TorrentPieceGridView(pieces: task.torrentPieces, color: task.status.color)
             } else {
                 Text("Piece map will appear once the download starts.")
                     .font(.system(size: 11))

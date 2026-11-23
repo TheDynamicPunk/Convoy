@@ -281,7 +281,7 @@ final class CaptureCoordinator: NSObject, ObservableObject, NSWindowDelegate {
     private func releaseTextFocus(in panel: NSPanel) {
         Task {
             try? await Task.sleep(for: .milliseconds(80))
-            if panel.firstResponder is NSText { panel.makeFirstResponder(nil) }
+            panel.releaseTextFocus()
         }
     }
 

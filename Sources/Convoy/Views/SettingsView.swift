@@ -46,6 +46,10 @@ struct SettingsView: View {
         .background(WindowAccessor { window in
             SettingsWindowTracker.shared.register(window)
         })
+        // A click on anything but a text field leaves the field being edited
+        // focused, so a typed value would sit uncommitted. Letting go of focus
+        // commits it. Covers every tab, not just one.
+        .background(ClickMonitor { $0.window?.releaseTextFocus() })
         .onAppear {
             SettingsWindowTracker.shared.bringToFront()
         }

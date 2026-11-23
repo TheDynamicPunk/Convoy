@@ -93,13 +93,13 @@ struct DuplicateDownloadSheet: View {
     private var existingTaskCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(existingStatusText)
+                Text(existing.status.label)
                     .font(.system(size: 10, weight: .semibold))
                     .textCase(.uppercase)
-                    .foregroundStyle(existingStatusColor)
+                    .foregroundStyle(existing.status.color)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .background(existingStatusColor.opacity(0.12), in: Capsule())
+                    .background(existing.status.color.opacity(0.12), in: Capsule())
 
                 Spacer()
 
@@ -110,12 +110,12 @@ struct DuplicateDownloadSheet: View {
                 }
             }
 
-            if showsProgressBar {
+            if existing.status.showsProgressBar {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5))
                         Capsule()
-                            .fill(existingStatusColor.opacity(0.75))
+                            .fill(existing.status.color.opacity(0.75))
                             .frame(width: max(4, geo.size.width * existing.progress))
                             .animation(.easeOut(duration: 0.25), value: existing.progress)
                     }
@@ -262,47 +262,6 @@ struct DuplicateDownloadSheet: View {
             return "checkmark.circle.fill"
         default:
             return "play.fill"
-        }
-    }
-
-    private var showsProgressBar: Bool {
-        switch existing.status {
-        case .downloading, .paused, .waiting, .starting, .validating,
-             .refreshingLink, .urlExpired, .destinationMissing:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private var existingStatusText: String {
-        switch existing.status {
-        case .waiting:                                  return "Waiting"
-        case .starting, .refreshingLink:               return "Starting"
-        case .validating:                              return "Checking"
-        case .downloading:                              return "Downloading"
-        case .paused:                                   return "Paused"
-        case .completed:                                return "Completed"
-        case .failed:                                   return "Failed"
-        case .cancelled:                                return "Cancelled"
-        case .urlExpired:                               return "Expired"
-        case .destinationMissing:                       return "Folder Missing"
-        case .awaitingDuplicateResolution:               return "Needs Input"
-        }
-    }
-
-    private var existingStatusColor: Color {
-        switch existing.status {
-        case .waiting:                                  return .orange
-        case .starting, .validating, .refreshingLink,
-             .downloading:                              return .blue
-        case .paused:                                   return .yellow
-        case .completed:                                return .green
-        case .failed:                                   return .red
-        case .cancelled:                                return .gray
-        case .urlExpired:                               return .orange
-        case .destinationMissing:                       return .orange
-        case .awaitingDuplicateResolution:               return .orange
         }
     }
 

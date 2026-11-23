@@ -177,7 +177,6 @@ struct TorrentSettingsView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .modifier(OutsideClickFocusDismisser())
         .animation(.easeInOut(duration: 0.2), value: showsRestartBar)
         .onChange(of: helperConfigSnapshot) { _, _ in
             dismissedRestartBanner = false
@@ -305,44 +304,5 @@ struct TorrentSettingsView: View {
                 refreshDefaultMagnetHandler()
             }
         }
-    }
-}
-
-/// Resigns text-field focus when the user clicks anywhere outside a text input
-/// in the Settings window, so typed values in `NumericSettingRow` commit
-/// immediately instead of staying focused until Return is pressed.
-private struct OutsideClickFocusDismisser: ViewModifier {
-    @State private var monitor: Any?
-
-    func body(content: Content) -> some View {
-        content
-            .onAppear {
-                guard monitor == nil else { return }
-                monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
-                    if let window = event.window,
-                       window.firstResponder is NSTextView,
-                       let contentView = window.contentView,
-                       let hit = contentView.hitTest(event.locationInWindow),
-                       !Self.isInsideTextInput(hit) {
-                        window.makeFirstResponder(nil)
-                    }
-                    return event
-                }
-            }
-            .onDisappear {
-                if let monitor {
-                    NSEvent.removeMonitor(monitor)
-                    self.monitor = nil
-                }
-            }
-    }
-
-    private static func isInsideTextInput(_ view: NSView) -> Bool {
-        var current: NSView? = view
-        while let v = current {
-            if v is NSTextField || v is NSTextView { return true }
-            current = v.superview
-        }
-        return false
     }
 }
