@@ -1,16 +1,18 @@
 import Foundation
 
 extension URLSessionConfiguration {
-    /// `.default` without the app's own cookie jar. The default stores every
-    /// Set-Cookie in `HTTPCookieStorage.shared` (on disk) and attaches it to
-    /// later requests to that site — so a cookie set during an incognito
-    /// download would ride along on a normal-window one. With this, the only
-    /// cookies a request carries are the ones the extension captured for it.
+    /// `.default` without the app's own cookie jar or credential store. The
+    /// default stores every Set-Cookie in `HTTPCookieStorage.shared` (on disk)
+    /// and attaches cached Basic/Digest credentials from `URLCredentialStorage`
+    /// — so a cookie or credential from one download could ride along on
+    /// another. With this, the only credentials a request carries are the ones
+    /// explicitly attached for it.
     static var cookieless: URLSessionConfiguration {
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
+        config.urlCredentialStorage = nil
         #if DEBUG
         if let testProtocolClasses { config.protocolClasses = testProtocolClasses }
         #endif
@@ -20,7 +22,9 @@ extension URLSessionConfiguration {
     #if DEBUG
     /// Tests put a stub `URLProtocol` in front of the sessions the engine
     /// builds itself; a registered protocol never reaches a custom session.
-    nonisolated(unsafe) static var testProtocolClasses: [AnyClass]?
+    nonisolated(unsafe) static var testProtocolClasses: [AnyClass]? {
+        didSet { URLSession.resetDebugCookielessSession() }
+    }
     #endif
 }
 
@@ -28,11 +32,38 @@ extension URLSession {
     /// Replaces `URLSession.shared` for engine traffic.
     static var cookieless: URLSession {
         #if DEBUG
-        // Built once, before any test may have set its stub.
-        if URLSessionConfiguration.testProtocolClasses != nil { return URLSession(configuration: .cookieless) }
+        if URLSessionConfiguration.testProtocolClasses != nil {
+            return debugCookielessLock.withLock {
+                if let existing = debugCookielessSession { return existing }
+                let session = URLSession(
+                    configuration: .cookieless,
+                    delegate: CrossHostURLSessionDelegate.redirectOnly,
+                    delegateQueue: nil
+                )
+                debugCookielessSession = session
+                return session
+            }
+        }
         #endif
         return sharedCookieless
     }
 
-    private static let sharedCookieless = URLSession(configuration: .cookieless)
+    private static let sharedCookieless = URLSession(
+        configuration: .cookieless,
+        delegate: CrossHostURLSessionDelegate.redirectOnly,
+        delegateQueue: nil
+    )
+
+    #if DEBUG
+    private static let debugCookielessLock = NSLock()
+    nonisolated(unsafe) private static var debugCookielessSession: URLSession?
+
+    fileprivate static func resetDebugCookielessSession() {
+        let old = debugCookielessLock.withLock { () -> URLSession? in
+            defer { debugCookielessSession = nil }
+            return debugCookielessSession
+        }
+        old?.finishTasksAndInvalidate()
+    }
+    #endif
 }

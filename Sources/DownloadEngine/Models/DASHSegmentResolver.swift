@@ -323,60 +323,96 @@ public struct DASHSegmentResolver {
         case .list(let segURLs, _):
             return segURLs
 
+        case .invalid:
+            return []
+
         // ── SegmentTemplate ($Number$ style) ────────────────────────────────────────
         case .templateNumber(let template, let start, let duration, let timescale, let totalDurationSec):
-            guard duration > 0, timescale > 0, totalDurationSec > 0 else { return [] }
-            let total = Int64(totalDurationSec * Double(timescale))
+            guard duration > 0, timescale > 0, totalDurationSec > 0, totalDurationSec.isFinite else { return [] }
+            let rawTotal = totalDurationSec * Double(timescale)
+            guard rawTotal.isFinite, rawTotal > 0, rawTotal < Double(Int64.max) else { return [] }
+            let total = Int64(rawTotal)
             let segDur = Int64(duration)
-            let count = Int((total + segDur - 1) / segDur)
-            return (0..<count).compactMap { i in
-                let number = start + i
-                let expanded = expandTemplate(template, repId: rep.id, number: number, bandwidth: rep.bandwidth, time: nil)
-                return URL(string: expanded, relativeTo: rep.resolvedBaseURL ?? mpdBaseURL)?.absoluteURL
+            let (numerator, numOverflow) = total.addingReportingOverflow(segDur - 1)
+            guard !numOverflow else { return [] }
+            let count64 = numerator / segDur
+            guard count64 > 0, count64 <= Int64(StreamLimits.maxSegments) else { return [] }
+            let count = Int(count64)
+            let base = rep.resolvedBaseURL ?? mpdBaseURL
+            var urls: [URL] = []
+            urls.reserveCapacity(count)
+            for i in 0..<count {
+                let (number, overflow) = start.addingReportingOverflow(i)
+                guard !overflow else { return [] }
+                guard let expanded = expandTemplate(template, repId: rep.id, number: number, bandwidth: rep.bandwidth, time: nil),
+                      let url = URL.resolveHTTP(expanded, relativeTo: base) else {
+                    return []
+                }
+                urls.append(url)
             }
-
+            return urls
 
         // ── SegmentTemplate + SegmentTimeline ───────────────────────────────────────
         case .templateTimeline(let mediaTemplate, let entries, _, let startNumber):
             var urls: [URL] = []
             var number = startNumber
+            var numberOverflowed = false
             var time: Int64 = 0
+            let base = rep.resolvedBaseURL ?? mpdBaseURL
             for entry in entries {
+                guard !numberOverflowed, entry.d >= 0 else { return [] }
                 // @t is optional on all but the first <S>; when absent the segment
                 // starts where the previous entry's last repeat ended.
                 let t = entry.t ?? time
-                let repeatCount = entry.r >= 0 ? entry.r : {
+                let remainingBudget = StreamLimits.maxSegments - urls.count
+                guard remainingBudget > 0 else { return [] }
+
+                let repeatCount: Int
+                if entry.r >= 0 {
+                    guard entry.r < remainingBudget else { return [] }
+                    repeatCount = entry.r
+                } else {
                     // r="-1" means "repeat to the end of the timeline". The end is
                     // only knowable from the presentation duration, which the parser
                     // converts into this Representation's own timescale.
-                    //
-                    // Ceiling division: a timeline whose remaining duration isn't an
-                    // exact multiple of the segment length still needs its trailing
-                    // fractional segment. E.g. 42 ticks remaining at d=4 needs 11
-                    // segments (covering ticks 0–44, the last one shorter than
-                    // nominal) — floor division here previously computed 10 and
-                    // silently dropped the last 2 ticks of content entirely. Real
-                    // encoders routinely produce a final segment shorter than the
-                    // rest, so this is the common case, not an edge case.
-                    guard entry.d > 0, let totalDur = rep.totalDurationTicks, totalDur > t else { return 0 }
-                    let remaining = totalDur - t
-                    let segmentCount = (remaining + entry.d - 1) / entry.d
-                    return Int(max(0, segmentCount - 1))
-                }()
-                for i in 0...repeatCount {
-                    // Each repeat advances $Time$ by exactly one segment duration.
-                    // Holding it constant across the repeats — as this did — yields
-                    // N copies of the same URL, so a timeline stream downloaded the
-                    // first segment repeatedly instead of the whole thing.
-                    let segStart = t + Int64(i) * entry.d
-                    let expanded = expandTemplate(mediaTemplate, repId: rep.id, number: number,
-                                                  bandwidth: rep.bandwidth, time: segStart)
-                    if let url = URL(string: expanded, relativeTo: rep.resolvedBaseURL ?? mpdBaseURL)?.absoluteURL {
-                        urls.append(url)
+                    if entry.d > 0, let totalDur = rep.totalDurationTicks, totalDur > t {
+                        let (remaining, remOverflow) = totalDur.subtractingReportingOverflow(t)
+                        guard !remOverflow else { return [] }
+                        let (numerator, numOverflow) = remaining.addingReportingOverflow(entry.d - 1)
+                        guard !numOverflow else { return [] }
+                        let segmentCount = numerator / entry.d
+                        guard segmentCount <= Int64(remainingBudget) else { return [] }
+                        repeatCount = Int(max(0, segmentCount - 1))
+                    } else {
+                        repeatCount = 0
                     }
-                    number += 1
                 }
-                time = t + entry.d * Int64(repeatCount + 1)
+
+                for i in 0...repeatCount {
+                    let (delta, mulOverflow) = Int64(i).multipliedReportingOverflow(by: entry.d)
+                    guard !mulOverflow else { return [] }
+                    let (segStart, addOverflow) = t.addingReportingOverflow(delta)
+                    guard !addOverflow else { return [] }
+                    guard let expanded = expandTemplate(mediaTemplate, repId: rep.id, number: number,
+                                                        bandwidth: rep.bandwidth, time: segStart),
+                          let url = URL.resolveHTTP(expanded, relativeTo: base) else {
+                        return []
+                    }
+                    urls.append(url)
+                    let (nextNumber, numOverflow) = number.addingReportingOverflow(1)
+                    if numOverflow {
+                        guard i == repeatCount else { return [] }
+                        numberOverflowed = true
+                    } else {
+                        number = nextNumber
+                    }
+                }
+
+                let (step, stepOverflow) = entry.d.multipliedReportingOverflow(by: Int64(repeatCount + 1))
+                guard !stepOverflow else { return [] }
+                let (nextTime, timeOverflow) = t.addingReportingOverflow(step)
+                guard !timeOverflow else { return [] }
+                time = nextTime
             }
             return urls
 
@@ -387,7 +423,7 @@ public struct DASHSegmentResolver {
             // resolvedBaseURL falls all the way back to the .mpd URL itself, and
             // returning that would hand the downloader the manifest XML to save
             // as the media file.
-            guard rep.hasExplicitBaseURL, let url = rep.resolvedBaseURL else { return [] }
+            guard rep.hasExplicitBaseURL, let url = rep.resolvedBaseURL, url.isHTTPOrHTTPS else { return [] }
             return [url]
         }
     }
@@ -396,26 +432,30 @@ public struct DASHSegmentResolver {
 
     /// Expands a DASH segment template string, substituting the four
     /// allowed identifiers: `$RepresentationID$`, `$Number$`, `$Bandwidth$`, `$Time$`.
-    /// Format suffixes like `$Number%05d$` are also handled.
+    /// Format suffixes like `$Number%05d$` are parsed safely per ISO/IEC 23009-1
+    /// §5.3.9.4.4 without passing untrusted strings to `String(format:)`.
+    /// Returns `nil` if a template carries an unsupported or malformed format tag.
     ///
     /// Internal (not private) so `MPDXMLParser` — a separate type in the same
     /// module — can call this when expanding init segment URLs from templates.
-    internal static func expandTemplate(_ template: String, repId: String?, number: Int, bandwidth: Int, time: Int64?) -> String {
+    internal static func expandTemplate(_ template: String, repId: String?, number: Int, bandwidth: Int, time: Int64?) -> String? {
         var result = template
         result = result.replacingOccurrences(of: "$RepresentationID$", with: repId ?? "")
         result = result.replacingOccurrences(of: "$Bandwidth$", with: "\(bandwidth)")
 
         // Number with optional format
-        result = replaceWithFormat(result, key: "Number", value: Int64(number))
+        guard let withNumber = replaceWithFormat(result, key: "Number", value: Int64(number)) else { return nil }
+        result = withNumber
         // Time with optional format
         if let t = time {
-            result = replaceWithFormat(result, key: "Time", value: t)
+            guard let withTime = replaceWithFormat(result, key: "Time", value: t) else { return nil }
+            result = withTime
         }
         result = result.replacingOccurrences(of: "$$", with: "$")
         return result
     }
 
-    private static func replaceWithFormat(_ s: String, key: String, value: Int64) -> String {
+    private static func replaceWithFormat(_ s: String, key: String, value: Int64) -> String? {
         var result = s
         // Match $Key%formatSpec$ (e.g. $Number%05d$) or plain $Key$
         let pattern = "\\$\(key)(?:%([^$]+))?\\$"
@@ -425,13 +465,75 @@ public struct DASHSegmentResolver {
         for match in matches {
             let fullRange = Range(match.range, in: result)!
             if match.numberOfRanges > 1, let fmtRange = Range(match.range(at: 1), in: result) {
-                let fmt = "%" + result[fmtRange]
-                result.replaceSubrange(fullRange, with: String(format: fmt, value))
+                guard let formatted = formatISO23009Integer(value, spec: result[fmtRange]) else {
+                    return nil
+                }
+                result.replaceSubrange(fullRange, with: formatted)
             } else {
                 result.replaceSubrange(fullRange, with: "\(value)")
             }
         }
         return result
+    }
+
+    /// Formats a 64-bit integer according to ISO/IEC 23009-1 §5.3.9.4.4:
+    /// `0?[width]?[duxX]` with width bounded to `1...32`.
+    private static func formatISO23009Integer(_ value: Int64, spec: Substring) -> String? {
+        guard let conversion = spec.last else { return nil }
+        let prefix = spec.dropLast()
+
+        var zeroPad = false
+        var widthSlice = prefix
+        if widthSlice.first == "0" {
+            zeroPad = true
+            widthSlice = widthSlice.dropFirst()
+        }
+
+        let width: Int
+        if widthSlice.isEmpty {
+            width = 1
+        } else {
+            guard widthSlice.allSatisfy(\.isASCII),
+                  widthSlice.allSatisfy(\.isNumber),
+                  let parsedWidth = Int(widthSlice),
+                  (1...32).contains(parsedWidth) else {
+                return nil
+            }
+            width = parsedWidth
+        }
+
+        let sign: String
+        let digits: String
+        switch conversion {
+        case "d":
+            if value < 0 {
+                sign = "-"
+                digits = String(value.magnitude, radix: 10)
+            } else {
+                sign = ""
+                digits = String(value, radix: 10)
+            }
+        case "u":
+            sign = ""
+            digits = String(UInt64(bitPattern: value), radix: 10)
+        case "x":
+            sign = ""
+            digits = String(UInt64(bitPattern: value), radix: 16)
+        case "X":
+            sign = ""
+            digits = String(UInt64(bitPattern: value), radix: 16).uppercased()
+        default:
+            return nil
+        }
+
+        let totalLen = sign.count + digits.count
+        guard totalLen < width else { return sign + digits }
+        let padCount = width - totalLen
+        if zeroPad {
+            return sign + String(repeating: "0", count: padCount) + digits
+        } else {
+            return String(repeating: " ", count: padCount) + sign + digits
+        }
     }
 }
 
@@ -465,6 +567,7 @@ enum MPDSegmentMode {
     case templateNumber(mediaTemplate: String, startNumber: Int, duration: Int64, timescale: Int64, totalDurationSec: Double)
     case templateTimeline(mediaTemplate: String, entries: [TimelineEntry], initTemplate: String?, startNumber: Int)
     case base
+    case invalid
 }
 
 struct TimelineEntry {
@@ -551,6 +654,7 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
     private var curLang: String?
     private var curRoleMain = false
     private var curInitURL: URL?
+    private var curInitInvalid = false
     private var curSegmentMode: MPDSegmentMode = .base
     private var curTotalDurationTicks: Int64?
 
@@ -566,6 +670,7 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
     // SegmentList fields
     private var slInitURL: URL?
     private var slSegmentURLs: [URL] = []
+    private var slInvalid = false
 
     // AdaptationSet shared fields (inherited by Representations)
     private var asetMimeType: String?
@@ -648,6 +753,7 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
             curLang = attributes["lang"] ?? asetLang
             curRoleMain = asetRoleMain
             curInitURL = nil
+            curInitInvalid = false
             curSegmentMode = .base
             curTotalDurationTicks = nil
             repBaseURL = nil
@@ -661,6 +767,7 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
             hasTimeline = false
             slSegmentURLs = []
             slInitURL = nil
+            slInvalid = false
 
         case "SegmentTemplate":
             let template = attributes["media"] ?? ""
@@ -703,17 +810,28 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
             }
 
         case "SegmentURL":
-            if let mediaAttr = attributes["media"],
-               let url = URL(string: mediaAttr, relativeTo: repBaseURL ?? asetBaseURL)?.absoluteURL {
-                slSegmentURLs.append(url)
+            if slSegmentURLs.count >= StreamLimits.maxSegments {
+                slInvalid = true
+                slSegmentURLs = []
+            } else if !slInvalid, let mediaAttr = attributes["media"] {
+                if let url = URL.resolveHTTP(mediaAttr, relativeTo: repBaseURL ?? asetBaseURL) {
+                    slSegmentURLs.append(url)
+                } else {
+                    slInvalid = true
+                    slSegmentURLs = []
+                }
             }
 
         case "Initialization":
             let src = attributes["sourceURL"] ?? attributes["source"] ?? ""
             let base = repBaseURL ?? asetBaseURL
-            if !src.isEmpty, let url = URL(string: src, relativeTo: base)?.absoluteURL {
-                curInitURL = url
-                slInitURL = url
+            if !src.isEmpty {
+                if let url = URL.resolveHTTP(src, relativeTo: base) {
+                    curInitURL = url
+                    slInitURL = url
+                } else {
+                    curInitInvalid = true
+                }
             }
 
         default: break
@@ -749,7 +867,7 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
             case "Representation": parentBase = asetBaseURL
             default: parentBase = baseURL
             }
-            guard let resolved = URL(string: trimmed, relativeTo: parentBase)?.absoluteURL else { break }
+            guard let resolved = URL.resolveHTTP(trimmed, relativeTo: parentBase) else { break }
             switch owner {
             case "MPD": mpdBaseURL = resolved; mpdHasBase = true
             case "Period": periodBaseURL = resolved; periodHasBase = true
@@ -774,9 +892,13 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
             let base = repBaseURL ?? asetBaseURL
             // Resolve init segment URL from template if not set by Initialization element
             var initURL = curInitURL
-            if initURL == nil, let tmpl = stInitTemplate, !tmpl.isEmpty {
-                let expanded = DASHSegmentResolver.expandTemplate(tmpl, repId: curId, number: stStartNumber, bandwidth: curBandwidth, time: nil)
-                initURL = URL(string: expanded, relativeTo: base)?.absoluteURL
+            if !curInitInvalid, initURL == nil, let tmpl = stInitTemplate, !tmpl.isEmpty {
+                if let expanded = DASHSegmentResolver.expandTemplate(tmpl, repId: curId, number: stStartNumber, bandwidth: curBandwidth, time: nil),
+                   let resolved = URL.resolveHTTP(expanded, relativeTo: base) {
+                    initURL = resolved
+                } else {
+                    curInitInvalid = true
+                }
             }
 
             // Presentation duration converted into this Representation's own
@@ -788,12 +910,17 @@ private final class MPDXMLParser: NSObject, XMLParserDelegate {
             // and collapses to a single segment, so a stream that describes itself
             // as "one 4s segment, repeated to the end" downloads exactly 4 seconds.
             let durationSec = mpdDuration ?? periodDuration
-            if let durationSec, durationSec > 0, stTimescale > 0 {
-                curTotalDurationTicks = Int64(durationSec * Double(stTimescale))
+            if let durationSec, durationSec > 0, durationSec.isFinite, stTimescale > 0 {
+                let rawTicks = durationSec * Double(stTimescale)
+                if rawTicks.isFinite, rawTicks > 0, rawTicks < Double(Int64.max) {
+                    curTotalDurationTicks = Int64(rawTicks)
+                }
             }
 
             let mode: MPDSegmentMode
-            if !slSegmentURLs.isEmpty {
+            if slInvalid || curInitInvalid {
+                mode = .invalid
+            } else if !slSegmentURLs.isEmpty {
                 mode = .list(segments: slSegmentURLs, initURL: slInitURL ?? curInitURL)
             } else if let mediaTemplate = stMediaTemplate, !mediaTemplate.isEmpty {
                 if hasTimeline {

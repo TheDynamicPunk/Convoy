@@ -1989,17 +1989,10 @@ struct PersistedDownloadTask: Codable {
 /// which is also the only path that gets a *current* cookie rather than
 /// whichever one happened to be stored when the download started.
 private func persistableStreamHeaders(_ headers: [String: String]) -> [String: String] {
-    // Everything the browser sends to make the request look like the page it
-    // came from, and nothing that authenticates it. Accept/Sec-Fetch-* are
-    // here because yt-dlp's per-format http_headers travel this path too
-    // (see the extension's explicitHeaders) and some CDNs do read them;
-    // dropping them would change what a resumed stream sends. Accept-Encoding
-    // is deliberately absent — URLSession negotiates its own.
-    let allowed: Set<String> = [
-        "user-agent", "referer", "origin", "accept", "accept-language",
-        "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest",
-    ]
-    return headers.filter { allowed.contains($0.key.lowercased()) }
+    // Reuses the single non-authenticating allowlist shared with cross-host
+    // header filtering so persisted stream headers and cross-origin requests
+    // can never drift apart.
+    CrossHostHeaderPolicy.nonAuthenticating(headers)
 }
 
 private extension String {

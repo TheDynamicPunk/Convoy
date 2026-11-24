@@ -93,14 +93,16 @@ public actor StreamDownloader {
                 ?? variants.max(by: { $0.bandwidth < $1.bandwidth }) {
             logger.notice("HLS master: picked variant bandwidth=\(chosen.bandwidth, privacy: .public) of \(variants.count, privacy: .public)")
             playlistURL = chosen.url
-            manifestText = try await fetchText(url: chosen.url, headers: headers)
+            let variantHeaders = CrossHostHeaderPolicy.headers(headers, from: manifestURL, to: chosen.url)
+            manifestText = try await fetchText(url: chosen.url, headers: variantHeaders)
             if audioTracks?.isEmpty ?? true, !chosen.audio.isEmpty { audioTracks = chosen.audio }
         }
 
         // ── 2. Parse into one or two track plans ───────────────────────────────────
         let plan = try await parseManifest(
             streamType: streamType, text: manifestText,
-            baseURL: playlistURL, representationId: representationId, bandwidth: bandwidth,
+            baseURL: playlistURL, originURL: manifestURL,
+            representationId: representationId, bandwidth: bandwidth,
             preferredAudioLanguage: preferredAudioLanguage, hlsAudioTracks: audioTracks,
             headers: headers
         )
@@ -206,7 +208,7 @@ public actor StreamDownloader {
             var pending: [Int] = []
             for (idx, segInfo) in track.segments.enumerated() {
                 let segment = StreamSegment(
-                    index: idx, url: segInfo.url, tempDir: trackDir, headers: headers, byteRange: segInfo.byteRange
+                    index: idx, url: segInfo.url, tempDir: trackDir, headers: [:], byteRange: segInfo.byteRange
                 )
                 if await segment.isComplete {
                     pieces[trackIndex][idx] = .done
@@ -248,6 +250,7 @@ public actor StreamDownloader {
                 pending: pendingByTrack[trackIndex],
                 session: session,
                 headers: headers,
+                originURL: manifestURL,
                 concurrency: max(1, segmentConcurrency),
                 isCancelled: { cancelled },
                 onSegmentStart: { index in
@@ -339,6 +342,7 @@ public actor StreamDownloader {
         pending pendingIndices: [Int],
         session: URLSession,
         headers: [String: String],
+        originURL: URL,
         concurrency: Int,
         isCancelled: () -> Bool,
         onSegmentStart: (Int) -> Void,
@@ -350,7 +354,14 @@ public actor StreamDownloader {
         // ── AES-128 key (HLS only) ──
         var aesKey: Data? = nil
         if let enc = track.encryption {
-            aesKey = try await fetchData(url: enc.keyURL, headers: headers)
+            let keyHeaders = CrossHostHeaderPolicy.headers(headers, from: originURL, to: enc.keyURL)
+            aesKey = try await fetchData(
+                url: enc.keyURL,
+                headers: keyHeaders,
+                maxBytes: StreamLimits.maxEncryptionKeyBytes,
+                limitError: StreamDownloadError.invalidEncryptionKey
+            )
+            if isCancelled() { throw DownloadError.cancelled }
             guard aesKey?.count == 16 else { throw StreamDownloadError.invalidEncryptionKey }
         }
 
@@ -358,8 +369,9 @@ public actor StreamDownloader {
         let initTempURL = trackDir.appendingPathComponent("init.mp4")
         if let initURL = track.initSegmentURL {
             logger.debug("Downloading \(track.label, privacy: .public) init segment: \(initURL.absoluteString)")
-            let seg = StreamSegment(index: -1, url: initURL, tempDir: trackDir, headers: headers, byteRange: track.initSegmentByteRange)
-            try await downloadSingleSegment(seg, to: initTempURL, session: session, headers: headers)
+            let initHeaders = CrossHostHeaderPolicy.headers(headers, from: originURL, to: initURL)
+            let seg = StreamSegment(index: -1, url: initURL, tempDir: trackDir, headers: initHeaders, byteRange: track.initSegmentByteRange)
+            try await downloadSingleSegment(seg, to: initTempURL, session: session)
             if isCancelled() { throw DownloadError.cancelled }
         }
 
@@ -371,10 +383,11 @@ public actor StreamDownloader {
             func submit(_ pendingIndex: Int) {
                 let idx = pendingIndices[pendingIndex]
                 let segInfo = track.segments[idx]
+                let segHeaders = CrossHostHeaderPolicy.headers(headers, from: originURL, to: segInfo.url)
                 onSegmentStart(idx)
                 group.addTask {
                     let seg = StreamSegment(index: idx, url: segInfo.url,
-                                            tempDir: trackDir, headers: headers, byteRange: segInfo.byteRange)
+                                            tempDir: trackDir, headers: segHeaders, byteRange: segInfo.byteRange)
                     try await seg.download(session: session)
                     let size = (try? FileManager.default.attributesOfItem(
                         atPath: seg.tempFileURL.path)[.size] as? Int64) ?? 0
@@ -408,18 +421,13 @@ public actor StreamDownloader {
 
                 if let enc = track.encryption, let key = aesKey {
                     let segURL = trackDir.appendingPathComponent(String(format: "segment-%04d.tmp", idx))
-                    let iv = enc.iv ?? ivFromSequenceNumber(track.mediaSequence + idx)
+                    let (seqNum, seqOverflow) = track.mediaSequence.addingReportingOverflow(idx)
+                    guard !seqOverflow else { throw StreamDownloadError.manifestParseError("Invalid media sequence") }
+                    let iv = enc.iv ?? ivFromSequenceNumber(seqNum)
                     try decryptAES128(fileURL: segURL, key: key, iv: iv)
                 }
 
-                // Re-create the segment only to commit its durable marker.
-                // It owns no in-memory download state at this point; its stable
-                // path is the resume key across pause/relaunch boundaries.
-                let completed = StreamSegment(
-                    index: idx, url: track.segments[idx].url, tempDir: trackDir, headers: headers,
-                    byteRange: track.segments[idx].byteRange
-                )
-                try await completed.markComplete()
+                try StreamSegment.markComplete(index: idx, in: trackDir)
 
                 onSegmentComplete(idx, bytes)
 
@@ -549,7 +557,7 @@ public actor StreamDownloader {
     }
 
     private func parseManifest(
-        streamType: String, text: String, baseURL: URL,
+        streamType: String, text: String, baseURL: URL, originURL: URL,
         representationId: String?, bandwidth: Int?, preferredAudioLanguage: String?,
         hlsAudioTracks: [HLSAudioCandidate]?, headers: [String: String]
     ) async throws -> ManifestPlan {
@@ -597,7 +605,8 @@ public actor StreamDownloader {
             logger.notice("HLS split audio: fetching \(chosen.url.absoluteString) (lang=\(chosen.lang ?? "unset", privacy: .public))")
             let audioText: String
             do {
-                audioText = try await fetchText(url: chosen.url, headers: headers)
+                let audioHeaders = CrossHostHeaderPolicy.headers(headers, from: originURL, to: chosen.url)
+                audioText = try await fetchText(url: chosen.url, headers: audioHeaders)
             } catch {
                 // A failed audio fetch shouldn't sink a video download that's
                 // otherwise perfectly fine — continuing video-only, silent, is
@@ -688,7 +697,12 @@ public actor StreamDownloader {
     }
 
     private func fetchText(url: URL, headers: [String: String]) async throws -> String {
-        let data = try await fetchData(url: url, headers: headers)
+        let data = try await fetchData(
+            url: url,
+            headers: headers,
+            maxBytes: StreamLimits.maxManifestBytes,
+            limitError: StreamDownloadError.manifestTooLarge
+        )
         guard let text = String(data: data, encoding: .utf8)
                       ?? String(data: data, encoding: .isoLatin1) else {
             throw StreamDownloadError.manifestParseError("Manifest is not valid text")
@@ -696,17 +710,26 @@ public actor StreamDownloader {
         return text
     }
 
-    /// A playlist or key, fetched whole. A failure of the moment is retried
-    /// (see `RetryPolicy`); as the first request of a stream, a host DNS
-    /// can't find fails at once.
-    private func fetchData(url: URL, headers: [String: String]) async throws -> Data {
+    /// A playlist or key, fetched whole with a hard size limit. A failure of
+    /// the moment is retried (see `RetryPolicy`); as the first request of a
+    /// stream, a host DNS can't find fails at once.
+    private func fetchData(
+        url: URL,
+        headers: [String: String],
+        maxBytes: Int,
+        limitError: Error
+    ) async throws -> Data {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
         var failures = 0
         while true {
             var retryAfter: TimeInterval?
             do {
-                let (data, response) = try await URLSession.cookieless.data(for: request)
+                let (data, response) = try await BoundedFetchSession.shared.data(
+                    for: request,
+                    maxBytes: maxBytes,
+                    limitError: limitError
+                )
                 if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                     retryAfter = RetryPolicy.retryAfter(http)
                     throw DownloadError.httpError(http.statusCode)
@@ -725,7 +748,7 @@ public actor StreamDownloader {
 
     /// Downloads a single segment to a specific URL (used for init segment which
     /// needs to land at a known path, not the generic segment-NNNN.tmp naming).
-    private func downloadSingleSegment(_ seg: StreamSegment, to dest: URL, session: URLSession, headers: [String: String]) async throws {
+    private func downloadSingleSegment(_ seg: StreamSegment, to dest: URL, session: URLSession) async throws {
         // Use the standard StreamSegment download mechanism, then move to dest.
         try await seg.download(session: session)
         if FileManager.default.fileExists(atPath: dest.path) {
@@ -748,6 +771,9 @@ public actor StreamDownloader {
     /// Decrypts a segment file in-place using AES-128-CBC with PKCS7 padding.
     /// This is the standard encryption mode mandated by RFC 8216 (HLS spec).
     private func decryptAES128(fileURL: URL, key: Data, iv: Data) throws {
+        guard key.count == kCCKeySizeAES128, iv.count == kCCBlockSizeAES128 else {
+            throw StreamDownloadError.invalidEncryptionKey
+        }
         let encrypted = try Data(contentsOf: fileURL)
         guard encrypted.count > 0 else { return }
 
@@ -795,10 +821,131 @@ public actor StreamDownloader {
     }
 }
 
+// MARK: - StreamLimits
+
+/// Single source of truth for stream manifest and segment safety bounds shared
+/// across `HLSParser`, `DASHSegmentResolver`, and `StreamDownloader`.
+public enum StreamLimits {
+    /// Hard upper bound on segments per resolved track.
+    public static let maxSegments = 50_000
+    /// Hard upper bound on manifest downloads (16 MiB).
+    public static let maxManifestBytes = 16 << 20
+    /// Hard upper bound on AES-128 key responses (keys are 16 bytes).
+    static let maxEncryptionKeyBytes = 1024
+}
+
+// MARK: - BoundedFetchSession
+
+/// Shared, connection-pooled `URLSession` for bounded manifest and key fetches.
+/// Inherits `CrossHostURLSessionDelegate` for redirect sanitization and tracks
+/// concurrent requests by `URLSessionTask` identity (same pattern as
+/// `SharedSegmentSessionDelegate` and `StreamSegmentSessionDelegate`).
+internal final class BoundedFetchSession: CrossHostURLSessionDelegate, URLSessionDataDelegate, @unchecked Sendable {
+    static let shared = BoundedFetchSession()
+
+    private final class Entry {
+        let maxBytes: Int
+        let limitError: Error
+        var data = Data()
+        var response: URLResponse?
+        var exceededLimit = false
+        let continuation: CheckedContinuation<(Data, URLResponse), Error>
+
+        init(maxBytes: Int, limitError: Error, continuation: CheckedContinuation<(Data, URLResponse), Error>) {
+            self.maxBytes = maxBytes
+            self.limitError = limitError
+            self.continuation = continuation
+        }
+    }
+
+    private let lock = NSLock()
+    private var entries: [URLSessionTask: Entry] = [:]
+    private lazy var pooledSession = URLSession(configuration: .cookieless, delegate: self, delegateQueue: nil)
+
+    func data(
+        for request: URLRequest,
+        maxBytes: Int,
+        limitError: Error = StreamDownloadError.manifestTooLarge
+    ) async throws -> (Data, URLResponse) {
+        #if DEBUG
+        if URLSessionConfiguration.testProtocolClasses != nil {
+            let ephemeral = URLSession(configuration: .cookieless, delegate: self, delegateQueue: nil)
+            defer { ephemeral.finishTasksAndInvalidate() }
+            return try await run(request: request, maxBytes: maxBytes, limitError: limitError, in: ephemeral)
+        }
+        #endif
+        return try await run(request: request, maxBytes: maxBytes, limitError: limitError, in: pooledSession)
+    }
+
+    private func run(
+        request: URLRequest,
+        maxBytes: Int,
+        limitError: Error,
+        in session: URLSession
+    ) async throws -> (Data, URLResponse) {
+        let task = session.dataTask(with: request)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.withLock {
+                    entries[task] = Entry(maxBytes: maxBytes, limitError: limitError, continuation: continuation)
+                }
+                task.resume()
+            }
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        let tooLarge = lock.withLock { () -> Bool in
+            guard let entry = entries[dataTask] else { return true }
+            entry.response = response
+            if response.expectedContentLength > Int64(entry.maxBytes) {
+                entry.exceededLimit = true
+                return true
+            }
+            return false
+        }
+        completionHandler(tooLarge ? .cancel : .allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        let tooLarge = lock.withLock { () -> Bool in
+            guard let entry = entries[dataTask] else { return true }
+            if entry.data.count + chunk.count > entry.maxBytes {
+                entry.exceededLimit = true
+                return true
+            }
+            entry.data.append(chunk)
+            return false
+        }
+        if tooLarge { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let entry = lock.withLock({ entries.removeValue(forKey: task) }) else { return }
+        if entry.exceededLimit {
+            entry.continuation.resume(throwing: entry.limitError)
+        } else if let error {
+            entry.continuation.resume(throwing: error)
+        } else if let response = entry.response {
+            entry.continuation.resume(returning: (entry.data, response))
+        } else {
+            entry.continuation.resume(throwing: DownloadError.invalidResponse)
+        }
+    }
+}
+
 // MARK: - StreamDownloadError
 
 public enum StreamDownloadError: LocalizedError {
     case manifestParseError(String)
+    case manifestTooLarge
     case drmProtected
     case invalidEncryptionKey
     case decryptionFailed(Int)
@@ -809,6 +956,8 @@ public enum StreamDownloadError: LocalizedError {
         switch self {
         case .manifestParseError(let msg):
             return "Could not read stream playlist: \(msg)"
+        case .manifestTooLarge:
+            return "This stream playlist is too large to read."
         // SAMPLE-AES, Widevine or FairPlay. Named in the log, not here.
         case .drmProtected:
             return "This video is copy-protected and can't be downloaded."

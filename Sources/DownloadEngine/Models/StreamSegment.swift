@@ -136,6 +136,14 @@ actor StreamSegment {
     /// The data is flushed first: without it, a power loss can persist the
     /// marker but not the bytes, and resume would reuse a corrupt segment.
     func markComplete() throws {
+        try Self.markComplete(index: index, in: tempFileURL.deletingLastPathComponent())
+    }
+
+    /// Commits a downloaded segment's `.complete` marker without instantiating
+    /// an actor.
+    static func markComplete(index: Int, in tempDir: URL) throws {
+        let tempFileURL = tempDir.appendingPathComponent(String(format: "segment-%04d.tmp", index))
+        let completionMarkerURL = tempDir.appendingPathComponent(String(format: "segment-%04d.complete", index))
         let fd = open(tempFileURL.path, O_RDONLY)
         guard fd >= 0 else { throw URLError(.fileDoesNotExist) }
         defer { close(fd) }
@@ -254,7 +262,7 @@ actor StreamSegment {
 /// queue), so they stay in arrival order and are complete before
 /// `didCompleteWithError` hands them to the segment. A `Task` per chunk gives
 /// no ordering guarantee.
-final class StreamSegmentSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+final class StreamSegmentSessionDelegate: CrossHostURLSessionDelegate, URLSessionDataDelegate, @unchecked Sendable {
     /// Buffered bytes above which a body is flushed to its file.
     static let spillThreshold = 8 << 20
 

@@ -59,7 +59,7 @@ struct HelperInstallStep: Sendable {
 /// `URLSession.download(from:)` reports nothing until it finishes, and its
 /// per-task delegate isn't sent `didWriteData`, so this uses its own session
 /// and delegate. The session is invalidated when the download ends.
-final class ProgressDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+final class ProgressDownload: CrossHostURLSessionDelegate, URLSessionDownloadDelegate, @unchecked Sendable {
     /// Byte updates are coalesced to about ten a second; the last one always
     /// goes out.
     private static let reportInterval: TimeInterval = 0.1

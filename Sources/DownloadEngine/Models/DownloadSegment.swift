@@ -406,7 +406,7 @@ actor DownloadSegment {
 /// land in arrival order and all before `didCompleteWithError`. A `Task` per
 /// chunk gives no ordering guarantee. Same pattern as
 /// `StreamSegmentSessionDelegate`.
-final class SharedSegmentSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+final class SharedSegmentSessionDelegate: CrossHostURLSessionDelegate, URLSessionDataDelegate, @unchecked Sendable {
     /// One in-flight request: its open file and its segment's counter.
     private final class Entry {
         let segment: DownloadSegment

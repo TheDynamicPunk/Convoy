@@ -747,4 +747,126 @@ final class DASHSegmentResolverTests: XCTestCase {
         XCTAssertEqual(legacy.segments, t.video.segments)
         XCTAssertEqual(legacy.segments.first?.lastPathComponent, "vh-1.m4s")
     }
+
+    // MARK: - Security hardening & bounds
+
+    func testExpandTemplateFormatsValid64BitSpecs() {
+        XCTAssertEqual(
+            DASHSegmentResolver.expandTemplate("seg-$Number%05d$.m4s", repId: "v1", number: 42, bandwidth: 1000, time: nil),
+            "seg-00042.m4s"
+        )
+        XCTAssertEqual(
+            DASHSegmentResolver.expandTemplate("seg-$Number%04x$-$Number%04X$.m4s", repId: "v1", number: 255, bandwidth: 1000, time: nil),
+            "seg-00ff-00FF.m4s"
+        )
+        let largeTime: Int64 = Int64(Int32.max) + 90_000
+        XCTAssertEqual(
+            DASHSegmentResolver.expandTemplate("t-$Time%012d$.m4s", repId: "v1", number: 1, bandwidth: 1000, time: largeTime),
+            "t-002147573647.m4s"
+        )
+        XCTAssertEqual(
+            DASHSegmentResolver.expandTemplate("min-$Time%d$.m4s", repId: "v1", number: 1, bandwidth: 1000, time: Int64.min),
+            "min--9223372036854775808.m4s"
+        )
+    }
+
+    func testExpandTemplateRejectsUnsafeOrMalformedFormatSpecs() {
+        let unsafeSpecs = [
+            "seg-$Number%s$.m4s",
+            "seg-$Number%@$.m4s",
+            "seg-$Number%n$.m4s",
+            "seg-$Number%0100d$.m4s",
+            "seg-$Number%-5d$.m4s",
+            "seg-$Number%05d%s$.m4s",
+            "seg-$Time%s$.m4s",
+        ]
+        for spec in unsafeSpecs {
+            XCTAssertNil(
+                DASHSegmentResolver.expandTemplate(spec, repId: "v1", number: 1, bandwidth: 1000, time: 100),
+                "Expected nil for unsafe template: \(spec)"
+            )
+        }
+    }
+
+    func testRejectsNonHTTPURLsInSegmentListAndInitialization() {
+        let badSegmentList = """
+        <MPD mediaPresentationDuration="PT10S">
+          <Period>
+            <AdaptationSet mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentList>
+                  <SegmentURL media="seg1.m4s"/>
+                  <SegmentURL media="file:///tmp/local.bin"/>
+                </SegmentList>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        XCTAssertNil(resolve(badSegmentList, representationId: "v1"))
+
+        let badInitElement = """
+        <MPD mediaPresentationDuration="PT10S">
+          <Period>
+            <AdaptationSet mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentList>
+                  <Initialization sourceURL="file:///tmp/local.bin"/>
+                  <SegmentURL media="seg1.m4s"/>
+                </SegmentList>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        XCTAssertNil(resolve(badInitElement, representationId: "v1"))
+
+        let badInitTemplate = """
+        <MPD mediaPresentationDuration="PT10S">
+          <Period>
+            <AdaptationSet mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate initialization="init-$Number%s$.mp4" media="seg-$Number$.m4s" duration="5" timescale="1" startNumber="1"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        XCTAssertNil(resolve(badInitTemplate, representationId: "v1"))
+    }
+
+    func testRejectsSegmentTimelineNumberOverflowAcrossEntries() {
+        let mpd = """
+        <MPD mediaPresentationDuration="PT10S">
+          <Period>
+            <AdaptationSet mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate media="seg-$Number$.m4s" timescale="1" startNumber="\(Int.max)">
+                  <SegmentTimeline>
+                    <S t="0" d="4"/>
+                    <S d="4"/>
+                  </SegmentTimeline>
+                </SegmentTemplate>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        XCTAssertNil(resolve(mpd, representationId: "v1"))
+    }
+
+    func testRejectsTemplateExceedingMaxSegments() {
+        let mpd = """
+        <MPD mediaPresentationDuration="PT\(StreamLimits.maxSegments + 1)S">
+          <Period>
+            <AdaptationSet mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate media="seg-$Number$.m4s" duration="1" timescale="1" startNumber="1"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        XCTAssertNil(resolve(mpd, representationId: "v1"))
+    }
 }

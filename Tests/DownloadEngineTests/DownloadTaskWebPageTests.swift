@@ -252,4 +252,18 @@ final class DownloadTaskWebPageTests: XCTestCase {
         try assertCompleted(task, with: expected)
         XCTAssertFalse(PageServer.requests.contains { $0.url == pageURL })
     }
+
+    func testDownloadTaskRejectsNonHTTPSchemes() async {
+        for raw in ["ftp://example.com/file.zip", "file:///tmp/local.bin"] {
+            let task = makeTask(url: raw, name: "file.zip", userProvidedName: true)
+            do {
+                try await task.start()
+                XCTFail("Expected invalidURL for \(raw)")
+            } catch DownloadError.invalidURL {
+                // Expected
+            } catch {
+                XCTFail("Unexpected error for \(raw): \(error)")
+            }
+        }
+    }
 }

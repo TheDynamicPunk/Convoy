@@ -388,7 +388,11 @@ public final class DownloadTask: ObservableObject, Identifiable {
     // `customHeaders` otherwise so non-YouTube sites are completely
     // unaffected.
     private var _effectiveURL: URL?
-    private var _effectiveHeaders: [String: String] = [:]
+    /// Nil until a redirect, web-page forward, resolver, or re-link establishes
+    /// an explicit header set. Optional so an intentionally empty sanitized
+    /// dictionary (`[:]`) never falls back to `customHeaders` and re-attaches
+    /// stripped credentials.
+    private var _effectiveHeaders: [String: String]?
     
     var effectiveURL: URL { _effectiveURL ?? forwardedURL ?? url }
 
@@ -396,7 +400,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
     /// start here rather than at `url`, the page; persisted, or a relaunch
     /// would resume from the page.
     public private(set) var forwardedURL: URL?
-    var effectiveHeaders: [String: String] { _effectiveHeaders.isEmpty ? customHeaders : _effectiveHeaders }
+    var effectiveHeaders: [String: String] { _effectiveHeaders ?? customHeaders }
     
     /// If we validated recently enough, skip the network check entirely on
     /// resume rather than doing a HEAD every single time — a resume soon
@@ -540,7 +544,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
             // never spend time on network work first.
             guard !markDestinationMissingIfNeeded() else { return }
 
-            guard url.scheme == "http" || url.scheme == "https" || url.scheme == "ftp" else {
+            guard url.isHTTPOrHTTPS else {
                 throw DownloadError.invalidURL
             }
             try await resolveIfNeeded()
@@ -1485,14 +1489,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // may redirect to a different edge node and the redirect target URL
         // might not carry ratebypass=yes. Keep it in place so every segment
         // request uses the unthrottled URL.
-        if let resolvedURL = metadata.resolvedURL, resolvedURL != effectiveURL {
-            logger.notice("Pinning task=\(self.id, privacy: .public) to resolved URL: \(resolvedURL.absoluteString)")
-            let pinnedURL = YouTubeResolver.bypassGooglevideoThrottle(resolvedURL)
-            _effectiveURL = pinnedURL
-            // Re-apply CDN headers for the redirect target — the edge node
-            // the CDN redirected us to is still googlevideo.com, but Origin
-            // and Referer must be in every request, not just the first one.
-            _effectiveHeaders = YouTubeResolver.ensureYouTubeCDNHeaders(_effectiveHeaders, for: pinnedURL)
+        if let resolvedURL = metadata.resolvedURL {
+            pinRedirectedURL(resolvedURL)
         }
         
         // Update filename from Content-Disposition or resolved URL
@@ -1689,18 +1687,31 @@ public final class DownloadTask: ObservableObject, Identifiable {
     }
 
     /// Sends later requests to `target` as a browser following the page
-    /// would: with the page as Referer, and without the page's credentials
-    /// when the file is on another host.
+    /// would: with the page as Referer, and without credentials or custom
+    /// non-allowlisted headers when the file is on another origin.
     private func follow(_ target: URL, from page: URL) {
-        let sameHost = target.host?.lowercased() == page.host?.lowercased()
-        var headers = effectiveHeaders.filter { header, _ in
-            let name = header.lowercased()
-            return name != "referer" && (sameHost || (name != "cookie" && name != "authorization"))
+        var headers = CrossHostHeaderPolicy.headers(effectiveHeaders, from: page, to: target)
+            .filter { $0.key.lowercased() != "referer" }
+        if !CrossHostHeaderPolicy.isHTTPSDowngrade(from: page, to: target) {
+            headers["Referer"] = page.absoluteString
         }
-        headers["Referer"] = page.absoluteString
         _effectiveHeaders = headers
         _effectiveURL = target
         forwardedURL = target
+    }
+
+    /// Pins `_effectiveURL` to a redirected response URL while stripping any
+    /// credentials or custom headers that must not cross origins, so later
+    /// segments, retries, and HEAD validations never leak them to the CDN.
+    private func pinRedirectedURL(_ resolvedURL: URL) {
+        let previousURL = effectiveURL
+        guard resolvedURL != previousURL else { return }
+        logger.notice("Pinning task=\(self.id, privacy: .public) to resolved URL: \(resolvedURL.absoluteString)")
+        let pinnedURL = YouTubeResolver.bypassGooglevideoThrottle(resolvedURL)
+        var headers = CrossHostHeaderPolicy.headers(effectiveHeaders, from: previousURL, to: pinnedURL)
+        headers = YouTubeResolver.ensureYouTubeCDNHeaders(headers, for: pinnedURL)
+        _effectiveURL = pinnedURL
+        _effectiveHeaders = headers
     }
 
     /// Downloads the file in one request, for a server whose ranges can't be
@@ -1722,8 +1733,8 @@ public final class DownloadTask: ObservableObject, Identifiable {
                     live = makeProbe(writingTo: tempPath, requestsRange: false)
                     let metadata = try await live.start()
                     // Where the file actually came from, for any request after this.
-                    if let resolved = metadata.resolvedURL, resolved != effectiveURL {
-                        _effectiveURL = resolved
+                    if let resolved = metadata.resolvedURL {
+                        pinRedirectedURL(resolved)
                     }
                     totalBytes = metadata.contentLength
                 }
@@ -2558,8 +2569,9 @@ public final class DownloadTask: ObservableObject, Identifiable {
         // a non-empty one would shadow the merge above. Only reachable via
         // relinkURL in practice — addYouTubeDownload raises its conflicts
         // with no incoming headers at all, so the guard above returns first.
-        if !_effectiveHeaders.isEmpty {
-            _effectiveHeaders = headers.merging(Self.withoutCookie(_effectiveHeaders)) { fresh, _ in fresh }
+        if let existing = _effectiveHeaders {
+            let scoped = CrossHostHeaderPolicy.headers(headers, from: url, to: effectiveURL)
+            _effectiveHeaders = scoped.merging(Self.withoutCookie(existing)) { fresh, _ in fresh }
         }
     }
 

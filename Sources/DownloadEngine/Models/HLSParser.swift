@@ -198,16 +198,17 @@ public struct HLSParser {
 
             // ── Media sequence (for IV derivation) ───────────────────────────────────
             if line.hasPrefix("#EXT-X-MEDIA-SEQUENCE:") {
-                let raw = line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count)
-                mediaSequence = Int(raw) ?? 0
+                let raw = line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count).trimmingCharacters(in: .whitespaces)
+                guard let parsed = Int(raw), parsed >= 0 else { return nil }
+                mediaSequence = parsed
                 continue
             }
 
             // ── Init segment (fMP4/CMAF) ──────────────────────────────────────────────
             if line.hasPrefix("#EXT-X-MAP:") {
                 let attrs = parseAttributeList(String(line.dropFirst("#EXT-X-MAP:".count)))
-                if let uriRaw = attrs["URI"]?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
-                   let resolved = resolveURL(uriRaw, against: baseURL) {
+                if let uriRaw = attrs["URI"]?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) {
+                    guard let resolved = URL.resolveHTTP(uriRaw, relativeTo: baseURL) else { return nil }
                     initSegmentURL = resolved
                     isFMP4 = true
                     // BYTERANGE on EXT-X-MAP always carries an explicit offset
@@ -237,8 +238,14 @@ public struct HLSParser {
                     currentEncryption = nil
                 } else if method == "AES-128" {
                     let uriRaw = attrs["URI"]?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) ?? ""
-                    guard let keyURL = resolveURL(uriRaw, against: baseURL) else { continue }
-                    let iv = attrs["IV"].flatMap { parseHexData(String($0)) }
+                    guard let keyURL = URL.resolveHTTP(uriRaw, relativeTo: baseURL) else { return nil }
+                    let iv: Data?
+                    if let ivAttr = attrs["IV"] {
+                        guard let parsedIV = parseAES128IV(ivAttr) else { return nil }
+                        iv = parsedIV
+                    } else {
+                        iv = nil
+                    }
                     currentEncryption = EncryptionInfo(method: "AES-128", keyURL: keyURL, iv: iv)
                     // Use the first key encountered as the playlist-level encryption info.
                     if encryption == nil { encryption = currentEncryption }
@@ -266,7 +273,7 @@ public struct HLSParser {
             guard let duration = pendingDuration else { continue }
             pendingDuration = nil
 
-            guard let segURL = resolveURL(line, against: baseURL) else { continue }
+            guard let segURL = URL.resolveHTTP(line, relativeTo: baseURL) else { return nil }
 
             var byteRange: HLSByteRange? = nil
             if let pending = pendingByteRangeValue {
@@ -284,8 +291,10 @@ public struct HLSParser {
                     // playlist rather than dropping the segment outright.
                     offset = 0
                 }
+                let (nextOffset, offsetOverflow) = offset.addingReportingOverflow(pending.length)
+                guard !offsetOverflow else { return nil }
                 byteRange = HLSByteRange(start: offset, length: pending.length)
-                runningByteOffset = offset + pending.length
+                runningByteOffset = nextOffset
                 lastByteRangeURL = segURL
                 pendingByteRangeValue = nil
             } else {
@@ -297,7 +306,9 @@ public struct HLSParser {
                 lastByteRangeURL = nil
             }
 
-            let seqNum = mediaSequence + segments.count
+            guard segments.count < StreamLimits.maxSegments else { return nil }
+            let (seqNum, seqOverflow) = mediaSequence.addingReportingOverflow(segments.count)
+            guard !seqOverflow else { return nil }
             segments.append(Segment(url: segURL, duration: duration, sequenceNumber: seqNum, byteRange: byteRange))
             totalDuration += duration
 
@@ -324,14 +335,6 @@ public struct HLSParser {
 
     // MARK: - Helpers
 
-    /// Resolves a URI string against a base URL. Returns `nil` on failure.
-    private static func resolveURL(_ raw: String, against base: URL) -> URL? {
-        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
-            return URL(string: raw)
-        }
-        return URL(string: raw, relativeTo: base)?.absoluteURL
-    }
-
     /// Parses an `EXT-X-BYTERANGE`/`EXT-X-MAP` BYTERANGE value: `<n>[@<o>]`
     /// (RFC 8216 §4.3.2.2) — `n` is the sub-range length, the optional `o` is
     /// its start offset. This function has no notion of "the previous
@@ -355,7 +358,7 @@ public struct HLSParser {
         for line in lines where line.hasPrefix("#EXT-X-MEDIA:") {
             let attrs = parseAttributeList(String(line.dropFirst("#EXT-X-MEDIA:".count)))
             guard attrs["TYPE"] == "AUDIO", let group = attrs["GROUP-ID"], let uri = attrs["URI"],
-                  let url = URL(string: uri, relativeTo: baseURL)?.absoluteURL else { continue }
+                  let url = URL.resolveHTTP(uri, relativeTo: baseURL) else { continue }
             audioGroups[group, default: []].append(
                 HLSAudioCandidate(url: url, lang: attrs["LANGUAGE"], isDefault: attrs["DEFAULT"] == "YES"))
         }
@@ -364,7 +367,7 @@ public struct HLSParser {
         for (i, line) in lines.enumerated() where line.hasPrefix("#EXT-X-STREAM-INF:") {
             let attrs = parseAttributeList(String(line.dropFirst("#EXT-X-STREAM-INF:".count)))
             guard let uri = lines[(i + 1)...].first(where: { !$0.isEmpty }), !uri.hasPrefix("#"),
-                  let url = URL(string: uri, relativeTo: baseURL)?.absoluteURL else { continue }
+                  let url = URL.resolveHTTP(uri, relativeTo: baseURL) else { continue }
             variants.append(MasterVariant(
                 url: url,
                 bandwidth: Int(attrs["BANDWIDTH"] ?? "") ?? 0,
@@ -378,7 +381,9 @@ public struct HLSParser {
         let parts = trimmed.split(separator: "@", maxSplits: 1)
         guard let first = parts.first, let length = Int64(first), length > 0 else { return nil }
         guard parts.count > 1 else { return (length, nil) }
-        guard let offset = Int64(parts[1]) else { return (length, nil) }
+        guard let offset = Int64(parts[1]), offset >= 0, !offset.addingReportingOverflow(length).overflow else {
+            return nil
+        }
         return (length, offset)
     }
 
@@ -422,19 +427,26 @@ public struct HLSParser {
         return attrs
     }
 
-    /// Parses a hex string like `0x0123456789ABCDEF...` into raw bytes.
-    private static func parseHexData(_ raw: String) -> Data? {
-        var hex = raw.uppercased()
+    /// Parses an HLS AES-128 `IV` attribute (`0x...`) into an exact 16-byte
+    /// buffer, left-padding shorter valid hex values with leading zeros and
+    /// rejecting values longer than 16 bytes or containing invalid hex.
+    private static func parseAES128IV(_ raw: String) -> Data? {
+        var hex = raw.trimmingCharacters(in: .whitespaces).uppercased()
         if hex.hasPrefix("0X") { hex = String(hex.dropFirst(2)) }
-        guard hex.count % 2 == 0 else { return nil }
-        var data = Data(capacity: hex.count / 2)
+        guard !hex.isEmpty, hex.count <= 32 else { return nil }
+        if hex.count % 2 != 0 { hex = "0" + hex }
+        var bytes = Data(capacity: 16)
+        let padding = 16 - (hex.count / 2)
+        if padding > 0 {
+            bytes.append(contentsOf: repeatElement(0, count: padding))
+        }
         var idx = hex.startIndex
         while idx < hex.endIndex {
             let next = hex.index(idx, offsetBy: 2)
             guard let byte = UInt8(hex[idx..<next], radix: 16) else { return nil }
-            data.append(byte)
+            bytes.append(byte)
             idx = next
         }
-        return data.isEmpty ? nil : data
+        return bytes.count == 16 ? bytes : nil
     }
 }

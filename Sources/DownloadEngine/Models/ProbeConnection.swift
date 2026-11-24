@@ -15,7 +15,7 @@ import OSLog
 ///    (connection keeps streaming data in the background)
 /// 2. Either `awaitCompletion()` (let it finish the whole file) or
 ///    `cancel()` (stop streaming, we're going to split into segments)
-final class ProbeConnection: NSObject, URLSessionDataDelegate {
+final class ProbeConnection: CrossHostURLSessionDelegate, URLSessionDataDelegate, @unchecked Sendable {
     
     struct Metadata {
         let contentLength: Int64
@@ -199,7 +199,7 @@ final class ProbeConnection: NSObject, URLSessionDataDelegate {
     }
     
     // MARK: - URLSessionDataDelegate
-    
+
     func urlSession(
         _ session: URLSession,
         dataTask: URLSessionDataTask,
