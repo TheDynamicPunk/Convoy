@@ -799,6 +799,15 @@ public actor YouTubeResolver {
         await ensurePotProviderRunning()
     }
 
+    /// Stops the managed PO-Token server if Convoy launched one, so a freshly
+    /// updated binary takes effect on the next resolve.
+    public func stopPotProvider() {
+        if let running = potProcess {
+            if running.isRunning { running.stop() }
+            potProcess = nil
+        }
+    }
+
     /// Starts the local PO-Token provider if the binary is present and no
     /// working instance is currently running.
     ///
@@ -845,7 +854,7 @@ public actor YouTubeResolver {
         // `stderrTailBytes: 0` sends its output to /dev/null, as before.
         let spec = ManagedProcessSpec(
             executable: URL(fileURLWithPath: potPath),
-            arguments: ["server", "--port", "4416"],
+            arguments: ["server", "--host", "127.0.0.1", "--port", "4416"],
             stderrTailBytes: 0,
             label: "bgutil-pot"
         )

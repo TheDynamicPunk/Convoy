@@ -116,6 +116,8 @@ final class IPCServer {
 
     private func handleClient(_ client: Int32) {
         defer { close(client) }
+        var noSigPipe: Int32 = 1
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
 
         // The connecting side should be the NativeMessagingHost binary
         // shipped next to this app's own executable, and nothing else.
@@ -232,7 +234,7 @@ final class IPCServer {
                 // rawHeaders because mergedHeaders dropped it; used for
                 // duplicate detection and shown up front in the capture dialog.
                 let expectedSize: Int64? = (rawHeaders["Content-Length"] ?? rawHeaders["content-length"]).flatMap { Int64($0) }
-                let explicitSegments = dict["segmentCount"] as? Int
+                let explicitSegments = (dict["segmentCount"] as? Int).map { DownloadTask.clampedSegmentCount($0) }
 
                 // One CapturedDownload per URL. CaptureCoordinator decides what
                 // happens next — ask the person first (the default) or add

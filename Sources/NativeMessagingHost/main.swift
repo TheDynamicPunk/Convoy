@@ -182,6 +182,8 @@ actor NativeMessagingHost {
                     return
                 }
                 defer { close(sock) }
+                var noSigPipe: Int32 = 1
+                setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
 
                 let (addr, addrLen) = IPCSocketAddress.make(path: socketPath)
                 var mutableAddr = addr
@@ -383,6 +385,9 @@ actor NativeMessagingHost {
         try? stdout.write(contentsOf: data)
     }
 }
+
+// Prevent a closed stdout pipe or IPC socket write from terminating the host.
+signal(SIGPIPE, SIG_IGN)
 
 let host = NativeMessagingHost()
 await host.run()

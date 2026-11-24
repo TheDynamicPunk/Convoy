@@ -100,6 +100,14 @@ public final class DownloadTask: ObservableObject, Identifiable {
     @Published public private(set) var downloadedBytes: Int64 = 0
     @Published public private(set) var speed: Int64 = 0
     @Published public private(set) var error: Error?
+    /// Allowed range for parallel segment connections per download.
+    public static let segmentCountRange: ClosedRange<Int> = 1...32
+
+    /// Clamps any caller-provided or persisted segment count into `segmentCountRange`.
+    public static func clampedSegmentCount(_ value: Int) -> Int {
+        min(max(value, segmentCountRange.lowerBound), segmentCountRange.upperBound)
+    }
+
     @Published public private(set) var segmentCount: Int = 8
 
     /// What `progress` and `estimatedTimeRemaining` measure against.
@@ -487,7 +495,7 @@ public final class DownloadTask: ObservableObject, Identifiable {
         self.originalName = originalName
         self.priority = priority
         self.createdAt = createdAt
-        self.segmentCount = segmentCount
+        self.segmentCount = Self.clampedSegmentCount(segmentCount)
         self.status = initialStatus
         self.totalBytes = totalBytes
         self.downloadedBytes = downloadedBytes

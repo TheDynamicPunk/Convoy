@@ -189,7 +189,7 @@ public final class DownloadManager: ObservableObject {
         // dest.lastPathComponent, is what every future request compares
         // against. See DownloadTask.originalName's doc comment.
         let originalName = dest.lastPathComponent
-        let segments = segmentCount ?? settings.defaultSegmentCount
+        let segments = DownloadTask.clampedSegmentCount(segmentCount ?? settings.defaultSegmentCount)
         // startAutomatically is the person's answer in the capture dialog
         // (Start vs Download Later); nil everywhere else, which leaves
         // it to the Settings switch exactly as before.
@@ -1566,7 +1566,7 @@ public final class DownloadManager: ObservableObject {
                 let task = DownloadTask(
                     id: snap.id, url: snap.url, destinationURL: dest,
                     originalName: snap.originalName,
-                    priority: priority, segmentCount: snap.segmentCount,
+                    priority: priority, segmentCount: DownloadTask.clampedSegmentCount(snap.segmentCount),
                     initialStatus: .paused, totalBytes: snap.totalBytes,
                     downloadedBytes: restoredBytes,
                     etag: snap.etag, lastModified: snap.lastModified,
@@ -1614,7 +1614,7 @@ public final class DownloadManager: ObservableObject {
                 let task = DownloadTask(
                     id: snap.id, url: snap.url, destinationURL: dest,
                     originalName: snap.originalName,
-                    priority: priority, segmentCount: snap.segmentCount,
+                    priority: priority, segmentCount: DownloadTask.clampedSegmentCount(snap.segmentCount),
                     initialStatus: .completed, totalBytes: snap.totalBytes,
                     downloadedBytes: snap.downloadedBytes,
                     filenameSource: snap.filenameSource ?? .originalURL,
@@ -1641,7 +1641,7 @@ public final class DownloadManager: ObservableObject {
                 let task = DownloadTask(
                     id: snap.id, url: snap.url, destinationURL: dest,
                     originalName: snap.originalName,
-                    priority: priority, segmentCount: snap.segmentCount,
+                    priority: priority, segmentCount: DownloadTask.clampedSegmentCount(snap.segmentCount),
                     initialStatus: .urlExpired(referrerURL: snap.referrerURL),
                     totalBytes: snap.totalBytes, downloadedBytes: snap.downloadedBytes,
                     etag: snap.etag, lastModified: snap.lastModified,

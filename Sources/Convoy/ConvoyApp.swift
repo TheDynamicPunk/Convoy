@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A second running copy switches to the one that owns the download list
     /// and quits, before any window or menu bar item exists.
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Prevent a peer-closed Unix socket or pipe write from terminating the app.
+        signal(SIGPIPE, SIG_IGN)
         // The owning copy applies the stored Dock icon preference here,
         // before any window exists. A second copy leaves its policy alone, so
         // the hand-off below behaves exactly as it did before this setting

@@ -71,13 +71,16 @@ public final class HelperAutoUpdate: ObservableObject {
 
         // Never installed any helpers: nothing to maintain. Recorded so this
         // doesn't re-evaluate on every launch until the list changes again.
-        let ytdlpInstalled = await YouTubeHelperInstaller.shared.currentStatus().ytdlpInstalled
+        let ytStatus = await YouTubeHelperInstaller.shared.currentStatus()
+        let ytdlpInstalled = ytStatus.ytdlpInstalled
+        let potInstalled = ytStatus.potInstalled
+        let hasYouTubeHelpers = ytdlpInstalled || potInstalled
         let rqbitInstalled = await TorrentHelperInstaller.shared.currentStatus().installed
-        guard ytdlpInstalled || rqbitInstalled else {
+        guard hasYouTubeHelpers || rqbitInstalled else {
             defaults.set(manifest.sequence, forKey: Self.lastSequenceKey)
             return
         }
-        scope = (ytdlpInstalled && rqbitInstalled) ? .both : (rqbitInstalled ? .torrent : .youtube)
+        scope = (hasYouTubeHelpers && rqbitInstalled) ? .both : (rqbitInstalled ? .torrent : .youtube)
 
         guard AppSettings.shared.keepHelpersUpToDate else {
             state = .waiting(.turnedOff)
@@ -96,6 +99,13 @@ public final class HelperAutoUpdate: ObservableObject {
             if ytdlpInstalled {
                 let ytResult = try await YouTubeHelperInstaller.shared.installOrUpdate { _ in }
                 updated.append(contentsOf: ytResult.updated)
+            }
+            if potInstalled {
+                let potResult = try await YouTubeHelperInstaller.shared.installPOTokenProvider { _ in }
+                updated.append(contentsOf: potResult.updated)
+                if !potResult.updated.isEmpty {
+                    await YouTubeResolver.shared.stopPotProvider()
+                }
             }
             if rqbitInstalled {
                 let torrentResult = try await TorrentHelperInstaller.shared.installOrUpdate { _ in }
