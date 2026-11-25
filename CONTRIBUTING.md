@@ -109,7 +109,8 @@ reporting 14 renders the whole app in the pre-26 design.
   planned.
 - **Match the surrounding code**: the same comment density, naming and
   structure as the file you're editing. Comments explain *why*, not *what*.
-- **Tests belong with behaviour changes**, in `Tests/DownloadEngineTests`.
+- **Tests belong with behaviour changes**, in `Tests/DownloadEngineTests` (or
+  `Tests/ConvoyTests` for app-level UI behaviour).
 - **User-facing text is plain English** — no jargon, no internal component
   names in the interface.
 

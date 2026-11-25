@@ -26,14 +26,16 @@ macOS asks you to approve it once — see [Installing](#installing).
 - **YouTube** through yt-dlp, which the app installs on request from
   Settings → YouTube. Newer versions of it arrive with Convoy updates.
 - **BitTorrent** from magnet links and `.torrent` files, through the rqbit
-  helper, which the app installs on request from Settings → Torrents. Choose
-  which files to download, watch peers and pieces, and decide whether to keep
-  seeding afterwards. Convoy never makes itself the default magnet-link
-  handler on its own; Settings → Torrents has a button for it.
+  helper, which the app installs on request from Settings → Torrents (newer
+  versions arrive with Convoy updates). Choose which files to download, watch
+  peers and pieces, and decide whether to keep seeding afterwards. Convoy
+  never makes itself the default magnet-link handler on its own; Settings →
+  Torrents has a button for it.
 - **Updates itself** — checks when it opens and every six hours after that,
   and asks before installing, or installs on its own if you turn that on.
-- **Queue** — filter by status (downloading, completed, paused, failed) and
-  search.
+- **Queue** — filter by status (downloading, completed, paused, failed),
+  search, bulk-select rows, and clear completed downloads from the list
+  without deleting their files.
 - **Download categories** — sort downloads into folders for you, by file type
   or by the site they came from. Rules have editable folders and an order, a
   preview shows where a file would go, and Convoy tells you when a rule falls
